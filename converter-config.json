@@ -1,0 +1,116 @@
+{
+  "inventoryTypeMapping": {
+    "CHAMPION_SKIN": {
+      "handler": "processSkin",
+      "subcategories": [
+        "CHROMA",
+        "PRESTIGE_SKIN",
+        "MYTHIC_SKIN",
+        "ULTIMATE_SKIN",
+        "LEGENDARY_SKIN",
+        "EPIC_SKIN",
+        "RARE_SKIN",
+        "COMMON_SKIN"
+      ]
+    },
+    "CHAMPION": {
+      "handler": "processChampion",
+      "subcategories": []
+    },
+    "BUNDLES": {
+      "handler": "processBundle",
+      "subcategories": [
+        "CHROMA_BUNDLE",
+        "PRESTIGE_BUNDLE",
+        "CHAMPION_BUNDLE",
+        "SKIN_BUNDLE",
+        "EVENT_BUNDLE"
+      ]
+    },
+    "HEXTECH_CRAFTING": {
+      "handler": "processHextech",
+      "subcategories": [
+        "HEXTECH_CHEST",
+        "HEXTECH_KEY",
+        "GEMSTONE",
+        "LOOT_ORBS"
+      ]
+    },
+    "SUMMONER_ICON": {
+      "handler": "processSummonerIcon",
+      "subcategories": []
+    },
+    "WARD_SKIN": {
+      "handler": "processWardSkin",
+      "subcategories": []
+    },
+    "EMOTE": {
+      "handler": "processEmote",
+      "subcategories": []
+    },
+    "ETERNALS": {
+      "handler": "processEternals",
+      "subcategories": []
+    }
+  },
+  "priceCategories": {
+    "RP": {
+      "Ultimate": 3250,
+      "Legendary": 1820,
+      "Epic": 1350,
+      "Rare": 975,
+      "Common": 520,
+      "Budget": 290
+    },
+    "BE": {
+      "Expensive": 6300,
+      "Standard": 4800,
+      "Cheap": 3150,
+      "Budget": 1350
+    }
+  },
+  "filters": {
+    "enabledTypes": [
+      "AUGMENT",
+      "AUGMENT_SLOT",
+      "BOOST",
+      "BUNDLES",
+      "CHAMPION",
+      "CHAMPION_SKIN",
+      "COMPANION",
+      "CURRENCY",
+      "EMOTE",
+      "EVENT_PASS",
+      "GIFT",
+      "HEXTECH_CRAFTING",
+      "MODE_PROGRESSION_REWARD",
+      "MYSTERY",
+      "QUEUE_ENTRY",
+      "RP",
+      "SPELL_BOOK_PAGE",
+      "STATSTONE",
+      "SUMMONER_CUSTOMIZATION",
+      "SUMMONER_ICON",
+      "TEAM_SKIN_PURCHASE",
+      "TFT_DAMAGE_SKIN",
+      "TFT_MAP_SKIN",
+      "TOURNAMENT_FLAG",
+      "TOURNAMENT_TROPHY",
+      "WARD_SKIN"
+    ],
+    "priceRanges": [
+      "500-999",
+      "100-499",
+      "1500-1999",
+      "2000-2999",
+      "3000-4999",
+      "1000-1499",
+      "5000+",
+      "0-99"
+    ],
+    "currencies": [
+      "RP",
+      "IP"
+    ]
+  }
+}
