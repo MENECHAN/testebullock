@@ -1,0 +1,146 @@
+const { REST, Routes, SlashCommandBuilder } = require('discord.js');
+const config = require('../config.json');
+
+const commands = [
+    new SlashCommandBuilder()
+        .setName('send-panel')
+        .setDescription('Envia o painel principal do shop')
+        .setDefaultMemberPermissions(0),
+    
+    new SlashCommandBuilder()
+        .setName('account')
+        .setDescription('Gerencia contas do sistema')
+        .setDefaultMemberPermissions(0)
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('add')
+                .setDescription('Adiciona uma nova conta')
+                .addStringOption(option => 
+                    option.setName('nickname')
+                        .setDescription('Nickname da conta')
+                        .setRequired(true)
+                )
+                .addIntegerOption(option => 
+                    option.setName('rp')
+                        .setDescription('Quantidade de RP')
+                        .setRequired(true)
+                )
+                .addIntegerOption(option => 
+                    option.setName('friends')
+                        .setDescription('Quantidade de amigos atual')
+                        .setRequired(true)
+                )
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('remove')
+                .setDescription('Remove uma conta')
+                .addIntegerOption(option => 
+                    option.setName('id')
+                        .setDescription('ID da conta')
+                        .setRequired(true)
+                )
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('edit')
+                .setDescription('Edita uma conta')
+                .addIntegerOption(option => 
+                    option.setName('id')
+                        .setDescription('ID da conta')
+                        .setRequired(true)
+                )
+                .addStringOption(option => 
+                    option.setName('nickname')
+                        .setDescription('Novo nickname')
+                        .setRequired(false)
+                )
+                .addIntegerOption(option => 
+                    option.setName('rp')
+                        .setDescription('Nova quantidade de RP')
+                        .setRequired(false)
+                )
+                .addIntegerOption(option => 
+                    option.setName('friends')
+                        .setDescription('Nova quantidade de amigos')
+                        .setRequired(false)
+                )
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('list')
+                .setDescription('Lista todas as contas')
+        ),
+
+    new SlashCommandBuilder()
+        .setName('catalog-manage')
+        .setDescription('Gerencia o sistema de catálogo')
+        .setDefaultMemberPermissions(0)
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('stats')
+                .setDescription('Mostra estatísticas do catálogo atual')
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('backup')
+                .setDescription('Cria um backup manual do catálogo')
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('cleanup')
+                .setDescription('Remove backups antigos')
+                .addIntegerOption(option =>
+                    option.setName('days')
+                        .setDescription('Remover backups mais antigos que X dias (padrão: 7)')
+                        .setRequired(false)
+                )
+        ),
+
+    new SlashCommandBuilder()
+        .setName('price-manage')
+        .setDescription('Gerencia preços do sistema')
+        .setDefaultMemberPermissions(0)
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('prices')
+                .setDescription('Mostra painel de gerenciamento de preços')
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('edit-item')
+                .setDescription('Edita o preço de um item específico')
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('reset-prices')
+                .setDescription('Reseta todos os preços para o padrão')
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('export-config')
+                .setDescription('Exporta configuração de preços')
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('import-config')
+                .setDescription('Importa configuração de preços')
+        )
+];
+
+const rest = new REST().setToken(config.token);
+
+(async () => {
+    try {
+        console.log('Started refreshing application (/) commands.');
+
+        await rest.put(
+            Routes.applicationGuildCommands(config.clientId, config.guildId),
+            { body: commands }
+        );
+
+        console.log('Successfully reloaded application (/) commands.');
+    } catch (error) {
+        console.error(error);
+    }
+})();

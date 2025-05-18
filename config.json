@@ -1,0 +1,34 @@
+{
+    "token": "MTM3MzczNDE2NDAzMzE3NTU3Mg.Gm5luW.TyYU2xG4aF1kTQ8B8mt4LDq7EP-mYJKdXbYFoI",
+    "clientId": "1373734164033175572",
+    "guildId": "1373727185940123728",
+    "adminRoleId": "1373728315579306136",
+    "gifterRoleId": "1373728322235662428",
+    "orderPanelChannelId": "1373728773819863202",
+    "ticketCategoryId": "1373727406656979067",
+    "encomendasChannelId": "1373728534589079734",
+    "ordersCompletedChannelId": "1373728703133126707",
+    "approvalNeededChannelId": "1373728628193628273",
+    "rpPricePer100": 0.50,
+    "currencySymbol": "$",
+    "paymentInfo": {
+        "paypal": {
+            "email": "gabrielaqw2.gv@gmail.com",
+            "notes": "Friends & Family, NO NOTES"
+        },
+        "crypto": {
+            "USDT_BEP20": "0x48974F3d7c6DAF257569d630DadC1492eA14988E",
+            "LTC": "LVXNBCaXrMUBqmmfm7bJWtzgVCH85BsrLp",
+            "ETH": "0x48974F3d7c6DAF257569d630DadC1492eA14988E",
+            "BTC": "bc1q9uxLv2s594Lgqpv8qa86t9mkf3sh3ppsYOURFULLBTCADDRESS",
+            "notes": "For other crypto coins / different networks, feel free to ask us."
+        },
+        "bank": {
+            "instructions": "For bank payments or Revolut, please type `faq 10`!"
+        }
+    },
+    "orderSettings": {
+        "minFriendshipDays": 7,
+        "maxItemsPerOrder": 3
+    }
+}

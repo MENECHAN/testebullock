@@ -1,0 +1,33 @@
+{
+  "categories": {
+    "CHAMPION_SKIN": {
+      "Ultimate": 3250,
+      "Legendary": 1820,
+      "Epic": 1350,
+      "Rare": 975,
+      "Common": 520,
+      "Chroma": 290
+    },
+    "CHAMPION": {
+      "price": 790
+    },
+    "BUNDLES": {
+      "multiplier": 0.85
+    },
+    "HEXTECH": {
+      "multiplier": 1.2
+    },
+    "PRESTIGE": {
+      "price": 2000
+    },
+    "MYTHIC": {
+      "price": 10
+    }
+  },
+  "modifiers": {
+    "prestige": 1.5,
+    "mythic": 2,
+    "limited": 1.3,
+    "legacy": 1.1
+  }
+}
