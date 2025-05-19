@@ -20,28 +20,8 @@ module.exports = {
             await PriceManagerHandler.handleSearchButton(interaction);
             return;
         }
-        if (action === 'edit' && params[0] === 'individual') {
-            await PriceManagerHandler.handleSearchButton(interaction);
-            return;
-        }
-        if (action === 'reset' && params[0] === 'all') {
-            await PriceManagerHandler.handleSearchButton(interaction);
-            return;
-        }
-        if (action === 'edit' && params[0] === 'item' && params[1] === 'price') {
-            await PriceManagerHandler.handleItemPriceEdit(interaction);
-            return;
-        }
-        if (action === 'confirm' && params[0] === 'reset') {
-            await PriceManagerHandler.handleResetConfirmation(interaction);
-            return;
-        }
-        if (action === 'cancel' && params[0] === 'reset') {
-            await PriceManagerHandler.handleResetConfirmation(interaction);
-            return;
-        }
 
-        // Handlers originais do carrinho
+        // Handlers do carrinho com dropdown
         switch (action) {
             case 'open':
                 if (params[0] === 'cart') {
@@ -62,21 +42,38 @@ module.exports = {
                     await handleRemoveItem(interaction, params[1]);
                 }
                 break;
-            case 'search':
-                if (params[0] === 'skins') {
-                    await handleSearchSkins(interaction, params[1]);
+            case 'close':
+                if (params[0] === 'cart') {
+                    await handleCloseCart(interaction, params[1]);
                 }
                 break;
             case 'confirm':
-                if (params[0] === 'skin') {
-                    await handleConfirmSkin(interaction, params[1], params[2]);
+                if (params[0] === 'close') {
+                    await CartService.handleCloseCart(interaction, params[1]);
+                } else if (params[0] === 'add') {
+                    await handleConfirmAddItem(interaction, params[1], params[2]);
+                }
+                break;
+            case 'cancel':
+                if (params[0] === 'close') {
+                    await handleCancelClose(interaction);
                 }
                 break;
             case 'back':
                 if (params[0] === 'cart') {
                     await handleBackToCart(interaction, params[1]);
-                } else if (params[0] === 'search') {
-                    await handleBackToSearch(interaction, params[1]);
+                } else if (params[0] === 'items') {
+                    await handleBackToItems(interaction, params[1], params[2], params[3]);
+                }
+                break;
+            case 'items':
+                if (params[0] === 'page') {
+                    await handleItemsPage(interaction, params[1], params[2], params[3]);
+                }
+                break;
+            case 'search':
+                if (params[0] === 'more') {
+                    await handleSearchMore(interaction, params[1]);
                 }
                 break;
             case 'checkout':
@@ -84,7 +81,7 @@ module.exports = {
                 break;
             case 'payment':
                 if (params[0] === 'sent') {
-                    await handlePaymentSent(interaction, params[1]);
+                    await CartService.handlePaymentSent(interaction, params[1]);
                 }
                 break;
         }
@@ -93,7 +90,6 @@ module.exports = {
 
 async function handleOpenCart(interaction) {
     try {
-        // Use the simple ephemeral flag approach for compatibility
         await interaction.deferReply({ ephemeral: true });
 
         // Create or get user
@@ -167,7 +163,7 @@ async function handleAddAccount(interaction) {
                     allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages]
                 },
                 {
-                    id: interaction.client.user.id, // Bot permissions
+                    id: interaction.client.user.id,
                     allow: [
                         PermissionsBitField.Flags.ViewChannel,
                         PermissionsBitField.Flags.SendMessages,
@@ -188,7 +184,7 @@ async function handleAddAccount(interaction) {
             });
         }
 
-        // Create account selection embed
+        // Send account selection embed
         const embed = new EmbedBuilder()
             .setTitle('👥 Selecione uma Conta')
             .setDescription('**Escolha uma conta para adicionar como amigo:**\n\n' +
@@ -322,33 +318,8 @@ async function handleAddItem(interaction, cartId) {
             });
         }
 
-        // Show search interface
-        const embed = new EmbedBuilder()
-            .setTitle('🔍 Pesquisar Skins')
-            .setDescription('**Como pesquisar:**\n\n' +
-                          '• Digite o nome do campeão ou da skin\n' +
-                          '• Use palavras-chave em português ou inglês\n' +
-                          '• Seja específico para melhores resultados\n\n' +
-                          'Clique no botão "Search" para começar!')
-            .setColor('#5865f2')
-            .setTimestamp();
-
-        const row = new ActionRowBuilder()
-            .addComponents(
-                new ButtonBuilder()
-                    .setCustomId(`search_skins_${cartId}`)
-                    .setLabel('🔍 Search')
-                    .setStyle(ButtonStyle.Primary),
-                new ButtonBuilder()
-                    .setCustomId(`back_cart_${cartId}`)
-                    .setLabel('◀️ Voltar')
-                    .setStyle(ButtonStyle.Secondary)
-            );
-
-        await interaction.editReply({
-            embeds: [embed],
-            components: [row]
-        });
+        // Show category selection
+        await CartService.sendCategorySelectEmbed(interaction.channel, cartId);
     } catch (error) {
         console.error('Error handling add item:', error);
         await interaction.followUp({
@@ -404,49 +375,37 @@ async function handleRemoveItem(interaction, cartId) {
     }
 }
 
-async function handleSearchSkins(interaction, cartId) {
+async function handleCloseCart(interaction, cartId) {
     try {
-        const modal = new ModalBuilder()
-            .setCustomId(`search_modal_${cartId}`)
-            .setTitle('Pesquisar Skins');
+        await interaction.deferUpdate();
 
-        const searchInput = new TextInputBuilder()
-            .setCustomId('search_query')
-            .setLabel('Nome do Campeão ou Skin')
-            .setStyle(TextInputStyle.Short)
-            .setPlaceholder('Ex: Yasuo, PROJECT, Elementalist...')
-            .setRequired(true)
-            .setMaxLength(100);
-
-        const firstActionRow = new ActionRowBuilder().addComponents(searchInput);
-        modal.addComponents(firstActionRow);
-
-        await interaction.showModal(modal);
+        // Show confirmation
+        await CartService.sendCloseCartConfirmation(interaction.channel, cartId);
     } catch (error) {
-        console.error('Error handling search skins:', error);
-        await interaction.reply({
-            content: '❌ Erro ao processar solicitação.',
+        console.error('Error handling close cart:', error);
+        await interaction.followUp({
+            content: '❌ Erro ao fechar carrinho.',
             ephemeral: true
         });
     }
 }
 
-async function handleConfirmSkin(interaction, cartId, skinId) {
+async function handleConfirmAddItem(interaction, cartId, itemId) {
     try {
         await interaction.deferUpdate();
 
-        const catalog = require('../catalog.json');
-        const skin = catalog.find(s => s.id == skinId);
+        // Validate item addition
+        const validation = await CartService.validateItemAddition(cartId, itemId);
         
-        if (!skin) {
+        if (!validation.valid) {
             return await interaction.followUp({
-                content: '❌ Skin não encontrada.',
+                content: `❌ ${validation.error}`,
                 ephemeral: true
             });
         }
 
         // Add item to cart
-        await Cart.addItem(cartId, skin.name, skin.price, skin.splash_art);
+        await Cart.addItem(cartId, validation.item.name, validation.item.price, validation.item.splashArt || validation.item.iconUrl, validation.item.category);
         
         // Update cart totals
         await Cart.updateTotals(cartId);
@@ -456,15 +415,34 @@ async function handleConfirmSkin(interaction, cartId, skinId) {
         await CartService.sendCartEmbed(interaction.channel, cart);
         
         await interaction.followUp({
-            content: `✅ **${skin.name}** adicionada ao carrinho!`,
+            content: `✅ **${validation.item.name}** adicionado ao carrinho!`,
             ephemeral: true
         });
     } catch (error) {
-        console.error('Error confirming skin:', error);
+        console.error('Error confirming add item:', error);
         await interaction.followUp({
             content: '❌ Erro ao adicionar item ao carrinho.',
             ephemeral: true
         });
+    }
+}
+
+async function handleCancelClose(interaction) {
+    try {
+        await interaction.deferUpdate();
+
+        const embed = new EmbedBuilder()
+            .setTitle('❌ Cancelado')
+            .setDescription('Fechamento do carrinho cancelado.')
+            .setColor('#5865f2')
+            .setTimestamp();
+
+        await interaction.editReply({
+            embeds: [embed],
+            components: []
+        });
+    } catch (error) {
+        console.error('Error handling cancel close:', error);
     }
 }
 
@@ -490,15 +468,56 @@ async function handleBackToCart(interaction, cartId) {
     }
 }
 
-async function handleBackToSearch(interaction, cartId) {
+async function handleBackToItems(interaction, cartId, category, page) {
     try {
         await interaction.deferUpdate();
         
-        await handleAddItem(interaction, cartId);
+        await CartService.sendItemsEmbed(interaction.channel, cartId, category, parseInt(page));
     } catch (error) {
-        console.error('Error going back to search:', error);
+        console.error('Error going back to items:', error);
         await interaction.followUp({
-            content: '❌ Erro ao voltar para a pesquisa.',
+            content: '❌ Erro ao voltar para os itens.',
+            ephemeral: true
+        });
+    }
+}
+
+async function handleItemsPage(interaction, cartId, category, page) {
+    try {
+        await interaction.deferUpdate();
+        
+        await CartService.sendItemsEmbed(interaction.channel, cartId, category, parseInt(page));
+    } catch (error) {
+        console.error('Error changing items page:', error);
+        await interaction.followUp({
+            content: '❌ Erro ao carregar página.',
+            ephemeral: true
+        });
+    }
+}
+
+async function handleSearchMore(interaction, cartId) {
+    try {
+        const modal = new ModalBuilder()
+            .setCustomId(`search_items_modal_${cartId}`)
+            .setTitle('Pesquisar Itens');
+
+        const searchInput = new TextInputBuilder()
+            .setCustomId('search_query')
+            .setLabel('Buscar por nome, campeão ou categoria')
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('Ex: Yasuo, PROJECT, Epic...')
+            .setRequired(true)
+            .setMaxLength(100);
+
+        const firstActionRow = new ActionRowBuilder().addComponents(searchInput);
+        modal.addComponents(firstActionRow);
+
+        await interaction.showModal(modal);
+    } catch (error) {
+        console.error('Error handling search more:', error);
+        await interaction.reply({
+            content: '❌ Erro ao processar busca.',
             ephemeral: true
         });
     }
@@ -530,18 +549,6 @@ async function handleCheckout(interaction, cartId) {
         console.error('Error handling checkout:', error);
         await interaction.followUp({
             content: '❌ Erro ao processar checkout.',
-            ephemeral: true
-        });
-    }
-}
-
-async function handlePaymentSent(interaction, cartId) {
-    try {
-        await CartService.handlePaymentSent(interaction, cartId);
-    } catch (error) {
-        console.error('Error handling payment sent:', error);
-        await interaction.followUp({
-            content: '❌ Erro ao processar pagamento.',
             ephemeral: true
         });
     }

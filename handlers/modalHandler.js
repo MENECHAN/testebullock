@@ -8,29 +8,37 @@ const PriceManagerHandler = require('./priceManagerHandler');
 
 module.exports = {
     async handle(interaction) {
-        // Handlers para gerenciamento de preços
-        if (interaction.customId.startsWith('price_edit_modal_')) {
-            await PriceManagerHandler.handlePriceEditModal(interaction);
-            return;
-        }
-        if (interaction.customId.startsWith('item_price_modal_')) {
-            await PriceManagerHandler.handleItemPriceModal(interaction);
-            return;
-        }
-        if (interaction.customId === 'search_item_modal') {
-            await PriceManagerHandler.handleSearchModal(interaction);
-            return;
-        }
-        if (interaction.customId === 'import_config_modal') {
-            await PriceManagerHandler.handleImportConfigModal(interaction);
-            return;
-        }
+        try {
+            // Handlers para gerenciamento de preços
+            if (interaction.customId.startsWith('price_edit_modal_')) {
+                await PriceManagerHandler.handlePriceEditModal(interaction);
+                return;
+            }
+            if (interaction.customId.startsWith('item_price_modal_')) {
+                await PriceManagerHandler.handleItemPriceModal(interaction);
+                return;
+            }
+            if (interaction.customId === 'search_item_modal') {
+                await PriceManagerHandler.handleSearchModal(interaction);
+                return;
+            }
+            if (interaction.customId === 'import_config_modal') {
+                await PriceManagerHandler.handleImportConfigModal(interaction);
+                return;
+            }
 
-        // Handlers originais
-        if (interaction.customId.startsWith('lol_nickname_modal_')) {
-            await handleLolNicknameModal(interaction);
-        } else if (interaction.customId.startsWith('search_modal_')) {
-            await handleSearchModal(interaction);
+            // Handlers do carrinho
+            if (interaction.customId.startsWith('lol_nickname_modal_')) {
+                await handleLolNicknameModal(interaction);
+            } else if (interaction.customId.startsWith('search_items_modal_')) {
+                await handleSearchItemsModal(interaction);
+            }
+        } catch (error) {
+            console.error('Error in modal handler:', error);
+            await interaction.followUp({
+                content: '❌ Erro ao processar modal.',
+                ephemeral: true
+            });
         }
     }
 };
@@ -117,179 +125,36 @@ async function handleLolNicknameModal(interaction) {
     }
 }
 
-async function handleSearchModal(interaction) {
+async function handleSearchItemsModal(interaction) {
     try {
         await interaction.deferUpdate();
 
-        const cartId = interaction.customId.split('_')[2];
-        const searchQuery = interaction.fields.getTextInputValue('search_query').toLowerCase();
+        const cartId = interaction.customId.split('_')[3];
+        const searchQuery = interaction.fields.getTextInputValue('search_query');
 
-        // Load catalog
-        let catalog = [];
-        try {
-            catalog = require('../catalog.json');
-        } catch (error) {
-            console.error('Error loading catalog:', error);
-            return await interaction.editReply({
-                content: '❌ Erro ao carregar catálogo de skins.',
-                components: []
+        // Validate search query
+        if (!searchQuery || searchQuery.trim().length < 2) {
+            return await interaction.followUp({
+                content: '❌ A busca deve ter pelo menos 2 caracteres.',
+                ephemeral: true
             });
         }
 
-        // Validate catalog
-        if (!Array.isArray(catalog)) {
-            console.error('Catalog is not an array');
-            return await interaction.editReply({
-                content: '❌ Catálogo inválido.',
-                components: []
-            });
-        }
-        
-        // Filter skins based on search query with null checks
-        const filteredSkins = catalog.filter(skin => {
-            if (!skin || typeof skin !== 'object') return false;
-            
-            const name = skin.name || '';
-            const champion = skin.champion || '';
-            
-            return name.toLowerCase().includes(searchQuery) ||
-                   champion.toLowerCase().includes(searchQuery);
-        });
+        // Handle search
+        await CartService.handleSearchItems(interaction.channel, cartId, searchQuery.trim());
 
-        if (filteredSkins.length === 0) {
-            const embed = new EmbedBuilder()
-                .setTitle('🔍 Nenhum Resultado')
-                .setDescription(`Nenhuma skin encontrada para: **${searchQuery}**\n\n` +
-                              'Tente pesquisar por:\n' +
-                              '• Nome do campeão\n' +
-                              '• Nome da skin\n' +
-                              '• Palavras-chave')
-                .setColor('#ed4245')
-                .setTimestamp();
-
-            const row = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setCustomId(`search_skins_${cartId}`)
-                        .setLabel('🔍 Nova Pesquisa')
-                        .setStyle(ButtonStyle.Primary),
-                    new ButtonBuilder()
-                        .setCustomId(`back_cart_${cartId}`)
-                        .setLabel('◀️ Voltar')
-                        .setStyle(ButtonStyle.Secondary)
-                );
-
-            return await interaction.editReply({
-                embeds: [embed],
-                components: [row]
-            });
-        }
-
-        // Paginate results (max 25 per page)
-        const itemsPerPage = 25;
-        const totalPages = Math.ceil(filteredSkins.length / itemsPerPage);
-        const currentPage = 1;
-        const startIndex = (currentPage - 1) * itemsPerPage;
-        const endIndex = startIndex + itemsPerPage;
-        const currentSkins = filteredSkins.slice(startIndex, endIndex);
-
-        // Validate each skin has required properties
-        const validSkins = currentSkins.filter(skin => {
-            return skin && 
-                   skin.id !== undefined && 
-                   skin.name && 
-                   skin.champion && 
-                   skin.price !== undefined;
-        });
-
-        if (validSkins.length === 0) {
-            return await interaction.editReply({
-                content: '❌ Erro: Skins inválidas encontradas no catálogo.',
-                components: []
-            });
-        }
-
-        // Create select menu
-        const selectMenu = new StringSelectMenuBuilder()
-            .setCustomId(`skin_select_${cartId}_${currentPage}`)
-            .setPlaceholder('Selecione uma skin')
-            .addOptions(
-                validSkins.map(skin => ({
-                    label: skin.name.substring(0, 100), // Discord limit
-                    description: `${skin.champion} - ${skin.price} RP (${(skin.price * 0.01).toFixed(2)}€)`.substring(0, 100),
-                    value: skin.id.toString()
-                }))
-            );
-
-        const components = [new ActionRowBuilder().addComponents(selectMenu)];
-
-        // Add navigation buttons if multiple pages
-        if (totalPages > 1) {
-            const navigationRow = new ActionRowBuilder();
-            
-            if (currentPage > 1) {
-                navigationRow.addComponents(
-                    new ButtonBuilder()
-                        .setCustomId(`prev_page_${cartId}_${currentPage - 1}`)
-                        .setLabel('◀️ Anterior')
-                        .setStyle(ButtonStyle.Secondary)
-                );
-            }
-
-            navigationRow.addComponents(
-                new ButtonBuilder()
-                    .setCustomId(`back_search_${cartId}`)
-                    .setLabel('🔍 Nova Pesquisa')
-                    .setStyle(ButtonStyle.Primary)
-            );
-
-            if (currentPage < totalPages) {
-                navigationRow.addComponents(
-                    new ButtonBuilder()
-                        .setCustomId(`next_page_${cartId}_${currentPage + 1}`)
-                        .setLabel('Próxima ▶️')
-                        .setStyle(ButtonStyle.Secondary)
-                );
-            }
-
-            components.push(navigationRow);
-        } else {
-            components.push(
-                new ActionRowBuilder()
-                    .addComponents(
-                        new ButtonBuilder()
-                            .setCustomId(`back_search_${cartId}`)
-                            .setLabel('🔍 Nova Pesquisa')
-                            .setStyle(ButtonStyle.Primary)
-                    )
-            );
-        }
-
-        const embed = new EmbedBuilder()
-            .setTitle('🔍 Resultados da Pesquisa')
-            .setDescription(`**Pesquisa:** ${searchQuery}\n` +
-                          `**Resultados:** ${filteredSkins.length} skin(s) encontrada(s)\n` +
-                          `**Página:** ${currentPage}/${totalPages}\n\n` +
-                          'Selecione uma skin no menu abaixo:')
-            .setColor('#5865f2')
-            .setTimestamp();
-
-        await interaction.editReply({
-            embeds: [embed],
-            components: components
-        });
     } catch (error) {
-        console.error('Error handling search modal:', error);
+        console.error('Error handling search items modal:', error);
         
         try {
             await interaction.editReply({
-                content: '❌ Erro ao processar pesquisa.',
+                content: '❌ Erro ao processar busca.',
                 components: []
             });
         } catch (editError) {
             console.error('Error editing reply:', editError);
             await interaction.followUp({
-                content: '❌ Erro ao processar pesquisa.',
+                content: '❌ Erro ao processar busca.',
                 ephemeral: true
             });
         }

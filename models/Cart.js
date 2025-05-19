@@ -89,13 +89,13 @@ class Cart {
         }
     }
 
-    static async addItem(cartId, skinName, skinPrice, skinImageUrl = null) {
+    static async addItem(cartId, skinName, skinPrice, skinImageUrl = null, category = null, originalItemId = null) {
         try {
             const query = `
-                INSERT INTO cart_items (cart_id, skin_name, skin_price, skin_image_url) 
-                VALUES (?, ?, ?, ?)
+                INSERT INTO cart_items (cart_id, skin_name, skin_price, skin_image_url, category, original_item_id) 
+                VALUES (?, ?, ?, ?, ?, ?)
             `;
-            const result = await db.run(query, [cartId, skinName, skinPrice, skinImageUrl]);
+            const result = await db.run(query, [cartId, skinName, skinPrice, skinImageUrl, category, originalItemId]);
             
             // Update cart totals
             await this.updateTotals(cartId);
@@ -267,6 +267,91 @@ class Cart {
             return await db.all(query, [startDate, endDate]);
         } catch (error) {
             console.error('Error getting orders by date range:', error);
+            throw error;
+        }
+    }
+
+    // Métodos específicos para categorias
+    static async getItemsByCategory(cartId) {
+        try {
+            const query = `
+                SELECT category, COUNT(*) as count, SUM(skin_price) as total_price
+                FROM cart_items 
+                WHERE cart_id = ? 
+                GROUP BY category
+                ORDER BY count DESC
+            `;
+            return await db.all(query, [cartId]);
+        } catch (error) {
+            console.error('Error getting items by category:', error);
+            throw error;
+        }
+    }
+
+    static async findItemInCart(cartId, originalItemId) {
+        try {
+            const query = 'SELECT * FROM cart_items WHERE cart_id = ? AND original_item_id = ?';
+            return await db.get(query, [cartId, originalItemId]);
+        } catch (error) {
+            console.error('Error finding item in cart:', error);
+            throw error;
+        }
+    }
+
+    static async validateCartLimits(cartId, config = null) {
+        try {
+            const items = await this.getItems(cartId);
+            const validation = {
+                valid: true,
+                errors: []
+            };
+
+            if (config && config.orderSettings) {
+                // Verificar limite máximo de itens
+                if (config.orderSettings.maxItemsPerOrder && items.length >= config.orderSettings.maxItemsPerOrder) {
+                    validation.valid = false;
+                    validation.errors.push(`Limite máximo de ${config.orderSettings.maxItemsPerOrder} itens por carrinho`);
+                }
+
+                // Verificar limite de valor total se existir
+                if (config.orderSettings.maxOrderValue) {
+                    const totalPrice = items.reduce((sum, item) => sum + (item.skin_price * 0.01), 0);
+                    if (totalPrice > config.orderSettings.maxOrderValue) {
+                        validation.valid = false;
+                        validation.errors.push(`Valor máximo por pedido excedido: €${totalPrice.toFixed(2)} > €${config.orderSettings.maxOrderValue}`);
+                    }
+                }
+            }
+
+            return validation;
+        } catch (error) {
+            console.error('Error validating cart limits:', error);
+            return { valid: false, errors: ['Erro ao validar limites do carrinho'] };
+        }
+    }
+
+    static async getCategoryStatistics(cartId = null) {
+        try {
+            let query = `
+                SELECT 
+                    category,
+                    COUNT(*) as item_count,
+                    SUM(skin_price) as total_rp,
+                    AVG(skin_price) as avg_price
+                FROM cart_items
+            `;
+            
+            const params = [];
+            if (cartId) {
+                query += ' WHERE cart_id = ?';
+                params.push(cartId);
+            }
+            
+            query += ' GROUP BY category ORDER BY item_count DESC';
+            
+            return await db.all(query, params);
+        } catch (error) {
+            console.error('Error getting category statistics:', error);
             throw error;
         }
     }
