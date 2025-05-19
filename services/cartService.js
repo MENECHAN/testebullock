@@ -1,100 +1,102 @@
-const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder } = require('discord.js');
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, MessageFlags } = require('discord.js');
 const Cart = require('../models/Cart');
-const OrderLog = require('../models/OrderLog');
 const config = require('../config.json');
-
 const fs = require('fs');
 
 class CartService {
 
-    static async sendCheckoutEmbed(interaction, cartId, cartItems) {
+static async sendCheckoutEmbed(interaction, client, cartId) {
         try {
-            const cart = await Cart.findById(cartId);
-            if (!cart) {
-                const replyMethod = interaction.replied || interaction.deferred ? 'followUp' : 'reply';
-                await interaction[replyMethod]({ content: '❌ Carrinho não encontrado para o checkout.', ephemeral: true });
+            await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+            const cart = await Cart.findById(cartId); // Cart é o modelo importado
+
+            if (!cart || cart.items.length === 0) {
+                await interaction.editReply({ content: 'Seu carrinho está vazio ou não foi encontrado.' });
                 return;
             }
 
-            const totalRP = cartItems.reduce((sum, item) => sum + item.skin_price, 0);
-            const rpToEurRate = config.orderSettings && typeof config.orderSettings.rpToEurRate === 'number' ? config.orderSettings.rpToEurRate : 0.01;
-            const totalPriceEUR = (totalRP * rpToEurRate).toFixed(2);
-
-            let paymentInstructions = "**ℹ️ Como Pagar:**\n\n";
-            if (config.paymentMethods) {
-                if (config.paymentMethods.paypal) {
-                    paymentInstructions += `**PayPal:**\n\`${config.paymentMethods.paypal}\`\n\n`;
-                }
-                if (config.paymentMethods.pix) {
-                    paymentInstructions += `**PIX (Chave):**\n\`${config.paymentMethods.pix}\`\n\n`;
-                }
-                if (config.paymentMethods.crypto && typeof config.paymentMethods.crypto === 'object') {
-                    paymentInstructions += "**Criptomoedas:**\n";
-                    for (const [coin, address] of Object.entries(config.paymentMethods.crypto)) {
-                        if (address) paymentInstructions += `* ${coin}: \`${address}\`\n`;
-                    }
-                    paymentInstructions += "\n";
-                }
-            } else {
-                paymentInstructions += "Nenhum método de pagamento configurado. Contate um administrador.\n\n";
+            if (!cart.userId) {
+                await interaction.editReply({ content: 'Erro crítico: ID do usuário não encontrado no carrinho.' });
+                return;
+            }
+            const user = await client.users.fetch(cart.userId);
+    
+            if (!user) {
+                await interaction.editReply({ content: 'Erro ao buscar informações do usuário. Tente novamente mais tarde.' });
+                return;
             }
 
-            paymentInstructions += "**➡️ Após o pagamento, por favor, envie o comprovante (print/imagem) NESTE CANAL.**\n" +
-                "Em seguida, clique no botão 'Já Enviei o Comprovante' abaixo.";
+            let totalRP = 0;
+            let totalPriceEUR = 0;
+            const itemsDetails = [];
+
+            const priceManager = PriceManager.getInstance(); // PriceManager é importado
+        
+            const itemIdsForPricing = cart.items.map(item => item.id);
+            
+            const prices = priceManager.getPrices(itemIdsForPricing);
+
+            for (const item of cart.items) {
+                
+                const itemPriceData = prices[item.id];
+
+                if (!itemPriceData || itemPriceData.RP === undefined || itemPriceData.EUR === undefined) {
+                    console.error(`[CartService ERROR] Price data not found or incomplete for item ID: ${item.id} (Name: ${item.name}) in cart ${cartId}. Price data from manager:`, itemPriceData);
+                    await interaction.editReply({ content: `Erro: O preço para o item "${item.name}" (ID: ${item.id}) não foi encontrado ou está incompleto. Remova-o do carrinho ou contate um administrador.` });
+                    return;
+                }
+                totalRP += itemPriceData.RP * item.quantity;
+                totalPriceEUR += itemPriceData.EUR * item.quantity;
+                itemsDetails.push(`- ${item.name} (x${item.quantity}): ${itemPriceData.RP * item.quantity} RP (${(itemPriceData.EUR * item.quantity).toFixed(2)} EUR)`);
+            }
+        
+        
+            const paymentMethodsDescription = Object.entries(config.paymentMethods) // config é importado
+                .map(([method, details]) => `**${method.toUpperCase()}:** ${details.instructions} (Taxa: ${details.feePercent}%)`)
+                .join('\n');
 
             const checkoutEmbed = new EmbedBuilder()
-                .setTitle('🛒 Finalizar Pedido')
-                .setColor('#5cb85c')
-                .setDescription(`Seu pedido está quase pronto! Por favor, realize o pagamento de **${totalRP.toLocaleString()} RP** (equivalente a **€${totalPriceEUR} EUR**).`)
+                .setTitle('🛒 Seu Checkout')
+                .setDescription(`Olá ${user.username}, aqui está o resumo do seu pedido e as instruções de pagamento.`)
                 .addFields(
-                    { name: '📋 Itens no Carrinho', value: cartItems.map(item => `• ${item.skin_name} (${item.skin_price.toLocaleString()} RP)`).join('\n') || 'Nenhum item', inline: false },
-                    { name: '💳 Instruções de Pagamento', value: paymentInstructions, inline: false }
+                    { name: 'Itens no Carrinho', value: itemsDetails.join('\n') || 'Nenhum item.' },
+                    { name: 'Total em RP', value: `${totalRP} RP`, inline: true },
+                    { name: 'Total em EUR (estimado)', value: `${totalPriceEUR.toFixed(2)} EUR`, inline: true },
+                    { name: 'Métodos de Pagamento', value: paymentMethodsDescription || 'Nenhum método de pagamento configurado.' }
                 )
-                .setFooter({ text: `ID do Carrinho: ${cartId} | ID do Canal: ${interaction.channel.id}` })
+                .setColor('#00FF00')
+                .setFooter({ text: `ID do Carrinho: ${cartId} | Responda com o comprovante neste canal.` })
                 .setTimestamp();
 
-            const itemsData = cartItems.map(item => ({ id: item.original_item_id || item.id, name: item.skin_name, price: item.skin_price, category: item.category, image_url: item.skin_image_url }));
-
-            let orderLogEntry = await OrderLog.findByCartIdAndStatus(cartId, ['PENDING_CHECKOUT', 'PENDING_PAYMENT_PROOF']);
-            let orderId;
-
-            if (orderLogEntry) {
-                orderId = orderLogEntry.id;
-                await OrderLog.updateStatus(orderId, 'PENDING_PAYMENT_PROOF', interaction.channel.id);
-            } else {
-                orderId = await OrderLog.create(
-                    cart.user_id,
-                    cartId,
-                    itemsData,
-                    totalRP,
-                    parseFloat(totalPriceEUR),
-                    'PENDING_PAYMENT_PROOF',
-                    null,
-                    interaction.channel.id
-                );
-            }
-
-            const row = new ActionRowBuilder()
+            const actionRow = new ActionRowBuilder()
                 .addComponents(
                     new ButtonBuilder()
-                        .setCustomId(`payment_proof_sent_${cartId}_${orderId}`)
-                        .setLabel('✅ Já Enviei o Comprovante')
+                        .setCustomId(`payment_proof_sent_${cartId}_${interaction.id}`)
+                        .setLabel('Já Enviei o Comprovante')
                         .setStyle(ButtonStyle.Success),
                     new ButtonBuilder()
-                        .setCustomId(`back_cart_${cartId}`)
-                        .setLabel('❌ Cancelar Checkout')
+                        .setCustomId(`cancel_order_${cartId}`)
+                        .setLabel('Cancelar Pedido')
                         .setStyle(ButtonStyle.Danger)
                 );
 
-            const replyMethod = interaction.replied || interaction.deferred ? 'editReply' : 'reply';
-            // A mensagem de checkout não deve ser efêmera para que o usuário possa interagir e ver as instruções
-            await interaction[replyMethod]({ embeds: [checkoutEmbed], components: [row], ephemeral: false });
+            console.log(`[CartService] Sending checkout embed for cart ID: ${cartId} to user ${user.tag}`);
+            await interaction.editReply({
+                content: `Aqui está o resumo do seu pedido, ${user}. Por favor, verifique os detalhes abaixo:`,
+                embeds: [checkoutEmbed],
+                components: [actionRow]
+            });
+        
 
+           
+            await OrderLog.updateStatusByCartId(cartId, 'PENDING_PAYMENT_PROOF'); // OrderLog é o modelo importado
+            
         } catch (error) {
-            console.error('Error sending checkout embed:', error);
-            const replyMethod = interaction.replied || interaction.deferred ? 'followUp' : 'reply';
-            // Esta mensagem de erro pode ser efêmera
-            await interaction[replyMethod]({ content: '❌ Erro ao exibir informações de checkout.', ephemeral: true }).catch(console.error);
+           if (interaction.deferred || interaction.replied) {
+                await interaction.editReply({ content: 'Ocorreu um erro crítico ao processar o seu carrinho para checkout. Por favor, tente novamente ou contate o suporte.', components: [] }).catch(err => console.error('[CartService CRITICAL ERROR] Failed to editReply on error handling:', err));
+            } else {
+                await interaction.reply({ content: 'Ocorreu um erro crítico ao processar o seu carrinho para checkout (e não foi possível deferir).', flags: [MessageFlags.Ephemeral] }).catch(err => console.error('[CartService CRITICAL ERROR] Failed to reply on error handling:', err));
+            }
         }
     }
 
@@ -592,8 +594,8 @@ class CartService {
     }
 
     // Em services/cartService.js, método handleSearchInCategory
-    // Em services/cartService.js, altere a assinatura do método:
-    static async handleSearchInCategory(channel, cartId, category, searchQuery, page = 1) {
+// Em services/cartService.js, altere a assinatura do método:
+static async handleSearchInCategory(channel, cartId, category, searchQuery, page = 1) {
         try {
             console.log('handleSearchInCategory - category:', category, 'searchQuery:', searchQuery, 'page:', page);
 

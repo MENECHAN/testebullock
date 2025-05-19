@@ -690,7 +690,7 @@ async function handleCheckout(interaction, cartId) {
         }
 
         // CartService.sendCheckoutEmbed agora lida com a resposta à interação
-        await CartService.sendCheckoutEmbed(interaction, cartId, items);
+        await CartService.sendCheckoutEmbed(interaction, interaction.client, cartId);
 
     } catch (error) {
         console.error('Error handling checkout:', error);
