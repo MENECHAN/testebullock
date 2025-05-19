@@ -11,6 +11,17 @@ class Account {
         }
     }
 
+    static async updateBalance(id, newBalance) {
+        try {
+            const query = 'UPDATE accounts SET rp_amount = ? WHERE id = ?';
+            const result = await db.run(query, [newBalance, id]);
+            return result.changes > 0;
+        } catch (error) {
+            console.error('Error updating account balance:', error);
+            throw error;
+        }
+    }
+
     static async findAll() {
         try {
             const query = 'SELECT * FROM accounts ORDER BY created_at DESC';
@@ -49,7 +60,7 @@ class Account {
         try {
             const allowedFields = ['nickname', 'rp_amount', 'friends_count', 'max_friends'];
             const fields = Object.keys(updates).filter(key => allowedFields.includes(key));
-            
+
             if (fields.length === 0) {
                 throw new Error('No valid fields to update');
             }
@@ -60,7 +71,7 @@ class Account {
 
             const query = `UPDATE accounts SET ${setClause} WHERE id = ?`;
             const result = await db.run(query, values);
-            
+
             return result.changes > 0;
         } catch (error) {
             console.error('Error updating account:', error);
@@ -72,7 +83,7 @@ class Account {
         try {
             // First check if account has any friendships
             const friendships = await db.get('SELECT COUNT(*) as count FROM friendships WHERE account_id = ?', [id]);
-            
+
             if (friendships.count > 0) {
                 throw new Error('Cannot delete account with existing friendships');
             }
@@ -175,7 +186,7 @@ class Account {
                 FROM accounts
             `;
             const result = await db.get(query);
-            
+
             return {
                 totalAccounts: result.total_accounts,
                 totalRP: result.total_rp || 0,

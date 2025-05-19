@@ -1,104 +1,181 @@
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, MessageFlags } = require('discord.js');
 const Cart = require('../models/Cart');
+const OrderLog = require('../models/OrderLog'); // ⭐ IMPORTAÇÃO NECESSÁRIA
 const config = require('../config.json');
 const fs = require('fs');
 
 class CartService {
 
-static async sendCheckoutEmbed(interaction, client, cartId) {
+    static async sendCheckoutEmbed(interaction, client, cartId) {
         try {
-            await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
-            const cart = await Cart.findById(cartId); // Cart é o modelo importado
+            console.log(`[DEBUG CartService.sendCheckoutEmbed] Starting with cartId: ${cartId}`);
+            console.log(`[DEBUG CartService.sendCheckoutEmbed] Interaction state - replied: ${interaction.replied}, deferred: ${interaction.deferred}`);
 
-            if (!cart || cart.items.length === 0) {
-                await interaction.editReply({ content: 'Seu carrinho está vazio ou não foi encontrado.' });
-                return;
+            // Só defer se ainda não foi respondido ou deferido
+            if (!interaction.replied && !interaction.deferred) {
+                await interaction.deferReply({ ephemeral: true });
             }
 
-            if (!cart.userId) {
-                await interaction.editReply({ content: 'Erro crítico: ID do usuário não encontrado no carrinho.' });
-                return;
+            // Buscar carrinho
+            const cart = await Cart.findById(cartId);
+            console.log(`[DEBUG CartService.sendCheckoutEmbed] Cart retrieval:`, cart ? `Status: ${cart.status}, User: ${cart.user_id}` : 'null');
+
+            if (!cart) {
+                const content = '❌ Carrinho não encontrado.';
+                return interaction.deferred ?
+                    await interaction.editReply({ content }) :
+                    await interaction.followUp({ content, ephemeral: true });
             }
-            const user = await client.users.fetch(cart.userId);
-    
-            if (!user) {
-                await interaction.editReply({ content: 'Erro ao buscar informações do usuário. Tente novamente mais tarde.' });
-                return;
+
+            // Aceitar tanto 'active' quanto 'pending_payment'
+            const validStatuses = ['active', 'pending_payment'];
+            if (!validStatuses.includes(cart.status)) {
+                const content = `❌ Carrinho não pode ser usado para checkout. Status: ${cart.status}`;
+                console.log(`[DEBUG CartService.sendCheckoutEmbed] ${content}`);
+                return interaction.deferred ?
+                    await interaction.editReply({ content }) :
+                    await interaction.followUp({ content, ephemeral: true });
             }
 
-            let totalRP = 0;
-            let totalPriceEUR = 0;
-            const itemsDetails = [];
+            const items = await Cart.getItems(cartId);
+            console.log(`[DEBUG CartService.sendCheckoutEmbed] Items retrieved: ${items.length}`);
 
-            const priceManager = PriceManager.getInstance(); // PriceManager é importado
-        
-            const itemIdsForPricing = cart.items.map(item => item.id);
-            
-            const prices = priceManager.getPrices(itemIdsForPricing);
+            if (items.length === 0) {
+                const content = '❌ Seu carrinho está vazio.';
+                return interaction.deferred ?
+                    await interaction.editReply({ content }) :
+                    await interaction.followUp({ content, ephemeral: true });
+            }
 
-            for (const item of cart.items) {
-                
-                const itemPriceData = prices[item.id];
+            // Verificar se já existe um pedido ativo
+            const existingOrder = await OrderLog.findByCartIdAndStatus(cartId, ['PENDING_PAYMENT_PROOF', 'PENDING_MANUAL_APPROVAL']);
 
-                if (!itemPriceData || itemPriceData.RP === undefined || itemPriceData.EUR === undefined) {
-                    console.error(`[CartService ERROR] Price data not found or incomplete for item ID: ${item.id} (Name: ${item.name}) in cart ${cartId}. Price data from manager:`, itemPriceData);
-                    await interaction.editReply({ content: `Erro: O preço para o item "${item.name}" (ID: ${item.id}) não foi encontrado ou está incompleto. Remova-o do carrinho ou contate um administrador.` });
-                    return;
+            if (existingOrder) {
+                console.log(`[DEBUG CartService.sendCheckoutEmbed] Existing order found: ${existingOrder.id}, status: ${existingOrder.status}`);
+
+                let statusMessage = '';
+                if (existingOrder.status === 'PENDING_PAYMENT_PROOF') {
+                    statusMessage = '⏳ **Aguardando comprovante de pagamento**\n\nRealize o pagamento e envie o comprovante (imagem) neste canal.';
+                } else if (existingOrder.status === 'PENDING_MANUAL_APPROVAL') {
+                    statusMessage = '🔍 **Comprovante em análise**\n\nSeu comprovante foi recebido e está sendo analisado pela nossa equipe.';
                 }
-                totalRP += itemPriceData.RP * item.quantity;
-                totalPriceEUR += itemPriceData.EUR * item.quantity;
-                itemsDetails.push(`- ${item.name} (x${item.quantity}): ${itemPriceData.RP * item.quantity} RP (${(itemPriceData.EUR * item.quantity).toFixed(2)} EUR)`);
-            }
-        
-        
-            const paymentMethodsDescription = Object.entries(config.paymentMethods) // config é importado
-                .map(([method, details]) => `**${method.toUpperCase()}:** ${details.instructions} (Taxa: ${details.feePercent}%)`)
-                .join('\n');
 
-            const checkoutEmbed = new EmbedBuilder()
-                .setTitle('🛒 Seu Checkout')
-                .setDescription(`Olá ${user.username}, aqui está o resumo do seu pedido e as instruções de pagamento.`)
-                .addFields(
-                    { name: 'Itens no Carrinho', value: itemsDetails.join('\n') || 'Nenhum item.' },
-                    { name: 'Total em RP', value: `${totalRP} RP`, inline: true },
-                    { name: 'Total em EUR (estimado)', value: `${totalPriceEUR.toFixed(2)} EUR`, inline: true },
-                    { name: 'Métodos de Pagamento', value: paymentMethodsDescription || 'Nenhum método de pagamento configurado.' }
+                const existingEmbed = new EmbedBuilder()
+                    .setTitle('📋 Pedido Já Existe')
+                    .setDescription(
+                        `Você já tem um pedido ativo para este carrinho.\n\n` +
+                        `**Pedido ID:** ${existingOrder.id}\n` +
+                        `**Status:** ${statusMessage}\n\n` +
+                        `**Total:** ${existingOrder.total_rp.toLocaleString()} RP (€${existingOrder.total_price.toFixed(2)})`
+                    )
+                    .setColor('#faa61a')
+                    .setTimestamp();
+
+                return interaction.deferred ?
+                    await interaction.editReply({ embeds: [existingEmbed] }) :
+                    await interaction.followUp({ embeds: [existingEmbed], ephemeral: true });
+            }
+
+            // Calcular totais
+            const totalRP = items.reduce((sum, item) => sum + item.skin_price, 0);
+            const totalPriceEUR = totalRP * 0.01;
+            console.log(`[DEBUG CartService.sendCheckoutEmbed] Totals calculated: ${totalRP} RP, €${totalPriceEUR}`);
+
+            // Criar lista de itens
+            const itemsList = items.map((item, index) =>
+                `${index + 1}. ${item.skin_name} - ${item.skin_price.toLocaleString()} RP`
+            ).join('\n');
+
+            // Métodos de pagamento do config
+            const paymentMethods = Object.entries(config.paymentMethods || {})
+                .map(([method, details]) =>
+                    `**${method.toUpperCase()}:**\n${details.instructions}\n*Taxa: ${details.feePercent || 0}%*`
+                ).join('\n\n') || 'Nenhum método de pagamento configurado.';
+
+            const embed = new EmbedBuilder()
+                .setTitle('🛒 Checkout - Finalizar Pedido')
+                .setDescription(
+                    `Revise seu pedido antes de finalizar:\n\n` +
+                    `**Itens (${items.length}):**\n${itemsList}\n\n` +
+                    `**Total: ${totalRP.toLocaleString()} RP (€${totalPriceEUR.toFixed(2)})**`
                 )
-                .setColor('#00FF00')
-                .setFooter({ text: `ID do Carrinho: ${cartId} | Responda com o comprovante neste canal.` })
+                .addFields([
+                    {
+                        name: '💳 Métodos de Pagamento',
+                        value: paymentMethods.length > 1024 ? paymentMethods.substring(0, 1021) + '...' : paymentMethods,
+                        inline: false
+                    },
+                    {
+                        name: '📝 Próximos Passos',
+                        value:
+                            '1. Clique em "Confirmar Pedido"\n' +
+                            '2. Realize o pagamento\n' +
+                            '3. Envie o comprovante neste canal\n' +
+                            '4. Aguarde aprovação',
+                        inline: false
+                    }
+                ])
+                .setColor('#00ff00')
+                .setFooter({ text: `Carrinho ID: ${cartId}` })
                 .setTimestamp();
 
-            const actionRow = new ActionRowBuilder()
+            const row = new ActionRowBuilder()
                 .addComponents(
                     new ButtonBuilder()
-                        .setCustomId(`payment_proof_sent_${cartId}_${interaction.id}`)
-                        .setLabel('Já Enviei o Comprovante')
+                        .setCustomId(`confirm_checkout_${cartId}`)
+                        .setLabel('✅ Confirmar Pedido')
                         .setStyle(ButtonStyle.Success),
                     new ButtonBuilder()
-                        .setCustomId(`cancel_order_${cartId}`)
-                        .setLabel('Cancelar Pedido')
-                        .setStyle(ButtonStyle.Danger)
+                        .setCustomId(`back_cart_${cartId}`)
+                        .setLabel('◀️ Voltar ao Carrinho')
+                        .setStyle(ButtonStyle.Secondary)
                 );
 
-            console.log(`[CartService] Sending checkout embed for cart ID: ${cartId} to user ${user.tag}`);
-            await interaction.editReply({
-                content: `Aqui está o resumo do seu pedido, ${user}. Por favor, verifique os detalhes abaixo:`,
-                embeds: [checkoutEmbed],
-                components: [actionRow]
-            });
-        
+            console.log(`[DEBUG CartService.sendCheckoutEmbed] Sending checkout embed...`);
 
-           
-            await OrderLog.updateStatusByCartId(cartId, 'PENDING_PAYMENT_PROOF'); // OrderLog é o modelo importado
-            
-        } catch (error) {
-           if (interaction.deferred || interaction.replied) {
-                await interaction.editReply({ content: 'Ocorreu um erro crítico ao processar o seu carrinho para checkout. Por favor, tente novamente ou contate o suporte.', components: [] }).catch(err => console.error('[CartService CRITICAL ERROR] Failed to editReply on error handling:', err));
+            // Responder baseado no estado da interação
+            if (interaction.deferred) {
+                await interaction.editReply({
+                    embeds: [embed],
+                    components: [row]
+                });
+            } else if (!interaction.replied) {
+                await interaction.reply({
+                    embeds: [embed],
+                    components: [row],
+                    ephemeral: true
+                });
             } else {
-                await interaction.reply({ content: 'Ocorreu um erro crítico ao processar o seu carrinho para checkout (e não foi possível deferir).', flags: [MessageFlags.Ephemeral] }).catch(err => console.error('[CartService CRITICAL ERROR] Failed to reply on error handling:', err));
+                await interaction.followUp({
+                    embeds: [embed],
+                    components: [row],
+                    ephemeral: true
+                });
+            }
+
+            console.log(`[DEBUG CartService.sendCheckoutEmbed] Checkout embed sent successfully`);
+
+        } catch (error) {
+            console.error('[ERROR CartService.sendCheckoutEmbed] Error:', error);
+            console.error('[ERROR CartService.sendCheckoutEmbed] Stack:', error.stack);
+
+            // Tentar responder com erro baseado no estado da interação
+            const errorContent = '❌ Erro ao processar checkout. Tente novamente.';
+
+            try {
+                if (interaction.deferred) {
+                    await interaction.editReply({ content: errorContent });
+                } else if (!interaction.replied) {
+                    await interaction.reply({ content: errorContent, ephemeral: true });
+                } else {
+                    await interaction.followUp({ content: errorContent, ephemeral: true });
+                }
+            } catch (followUpError) {
+                console.error('[ERROR CartService.sendCheckoutEmbed] FollowUp error:', followUpError);
             }
         }
     }
+
 
     static async sendCartEmbed(channel, cart) {
         try {
@@ -519,15 +596,17 @@ static async sendCheckoutEmbed(interaction, client, cartId) {
 
     static async sendItemPreviewEmbed(channel, cartId, itemId) {
         try {
+            console.log(`[DEBUG] sendItemPreviewEmbed called with cartId: ${cartId}, itemId: ${itemId}`);
+
             // Load catalog
             let catalog = [];
-
             if (fs.existsSync('./catalog.json')) {
                 catalog = JSON.parse(fs.readFileSync('./catalog.json', 'utf8'));
             }
 
             // Find item
             const item = catalog.find(i => i.id == itemId);
+            console.log(`[DEBUG] Item found for preview:`, item ? item.name : 'Not found');
 
             if (!item) {
                 const embed = new EmbedBuilder()
@@ -538,11 +617,19 @@ static async sendCheckoutEmbed(interaction, client, cartId) {
                 return await channel.send({ embeds: [embed] });
             }
 
+            // Determinar categoria
+            let category = item.inventoryType || 'OTHER';
+            if (item.subInventoryType === 'RECOLOR') {
+                category = 'CHROMA';
+            } else if (item.subInventoryType === 'CHROMA_BUNDLE') {
+                category = 'CHROMA_BUNDLE';
+            }
+
             // Create preview embed
             const embed = new EmbedBuilder()
-                .setTitle('🎨 Preview da Skin')
+                .setTitle('🎨 Preview do Item')
                 .setDescription(`**${item.name}**\n\n` +
-                    `${this.getCategoryEmoji(item.category)} **Categoria:** ${this.getCategoryName(item.category)}\n` +
+                    `${this.getCategoryEmoji(category)} **Categoria:** ${this.getCategoryName(category)}\n` +
                     `${item.champion ? `🏆 **Campeão:** ${item.champion}\n` : ''}` +
                     `💎 **Preço:** ${item.price.toLocaleString()} RP\n` +
                     `💰 **Valor:** ${(item.price * 0.01).toFixed(2)}€\n` +
@@ -570,14 +657,17 @@ static async sendCheckoutEmbed(interaction, client, cartId) {
             }
 
             // Create action buttons
+            const customId = `confirm_add_${cartId}_${itemId}`;
+            console.log(`[DEBUG] Creating button with customId: ${customId}`);
+
             const row = new ActionRowBuilder()
                 .addComponents(
                     new ButtonBuilder()
-                        .setCustomId(`confirm_add_${cartId}_${itemId}`)
+                        .setCustomId(customId)
                         .setLabel('✅ Adicionar ao Carrinho')
                         .setStyle(ButtonStyle.Success),
                     new ButtonBuilder()
-                        .setCustomId(`back_items_${cartId}_${item.category}_1`)
+                        .setCustomId(`back_items_${cartId}_${category}_1`)
                         .setLabel('◀️ Voltar')
                         .setStyle(ButtonStyle.Secondary)
                 );
@@ -588,14 +678,14 @@ static async sendCheckoutEmbed(interaction, client, cartId) {
             });
 
         } catch (error) {
-            console.error('Error sending item preview embed:', error);
+            console.error('[ERROR] Error sending item preview embed:', error);
             throw error;
         }
     }
 
     // Em services/cartService.js, método handleSearchInCategory
-// Em services/cartService.js, altere a assinatura do método:
-static async handleSearchInCategory(channel, cartId, category, searchQuery, page = 1) {
+    // Em services/cartService.js, altere a assinatura do método:
+    static async handleSearchInCategory(channel, cartId, category, searchQuery, page = 1) {
         try {
             console.log('handleSearchInCategory - category:', category, 'searchQuery:', searchQuery, 'page:', page);
 
@@ -836,32 +926,67 @@ static async handleSearchInCategory(channel, cartId, category, searchQuery, page
     }
 
     // Method to validate if item can be added to cart
+    // Em services/cartService.js, corrigir o método validateItemAddition
+
     static async validateItemAddition(cartId, itemId) {
         try {
-            // Check if item exists in catalog
-            const catalog = JSON.parse(fs.readFileSync('./catalog.json', 'utf8'));
+            // Verificar se o carrinho existe
+            const cart = await Cart.findById(cartId);
+            if (!cart) {
+                return { valid: false, error: 'Carrinho não encontrado' };
+            }
+
+            // Carregar catálogo
+            let catalog = [];
+            if (fs.existsSync('./catalog.json')) {
+                catalog = JSON.parse(fs.readFileSync('./catalog.json', 'utf8'));
+            } else {
+                return { valid: false, error: 'Catálogo não encontrado' };
+            }
+
+            // Verificar se o item existe no catálogo
             const item = catalog.find(i => i.id == itemId);
-
             if (!item) {
-                throw new Error('Item não encontrado no catálogo');
+                return { valid: false, error: 'Item não encontrado no catálogo' };
             }
 
-            // Check if item is already in cart
+            // Verificar se o item já está no carrinho
+            const existingItem = await Cart.findItemInCart(cartId, itemId);
+            if (existingItem) {
+                return { valid: false, error: 'Este item já está no seu carrinho' };
+            }
+
+            // Verificar limites do carrinho
             const cartItems = await Cart.getItems(cartId);
-            const isInCart = cartItems.some(cartItem => cartItem.original_item_id == itemId);
-
-            if (isInCart) {
-                throw new Error('Esta skin já está no seu carrinho');
+            if (cartItems.length >= (config.orderSettings?.maxItemsPerOrder || 50)) {
+                return { valid: false, error: `Limite máximo de ${config.orderSettings?.maxItemsPerOrder || 50} itens por carrinho` };
             }
 
-            // Check cart limits (if any)
-            if (cartItems.length >= config.orderSettings.maxItemsPerOrder) {
-                throw new Error(`Limite máximo de ${config.orderSettings.maxItemsPerOrder} itens por carrinho`);
+            // Verificar valor total se existir limite
+            if (config.orderSettings?.maxOrderValue) {
+                const currentTotal = cartItems.reduce((sum, item) => sum + (item.skin_price * 0.01), 0);
+                const newTotal = currentTotal + (item.price * 0.01);
+                if (newTotal > config.orderSettings.maxOrderValue) {
+                    return { valid: false, error: `Valor máximo por pedido excedido: €${newTotal.toFixed(2)} > €${config.orderSettings.maxOrderValue}` };
+                }
             }
 
-            return { valid: true, item };
+            return {
+                valid: true,
+                item: {
+                    id: item.id,
+                    name: item.name,
+                    price: item.price,
+                    splashArt: item.splashArt || item.splash_art,
+                    iconUrl: item.iconUrl,
+                    category: item.inventoryType,
+                    champion: item.champion
+                }
+            };
+
         } catch (error) {
-            return { valid: false, error: error.message };
+            console.error('Error validating item addition:', error);
+            return { valid: false, error: 'Erro interno ao validar item' };
         }
     }
 

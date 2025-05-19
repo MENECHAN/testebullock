@@ -1,334 +1,507 @@
-// services/orderService.js
-const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder } = require('discord.js');
 const OrderLog = require('../models/OrderLog');
 const Account = require('../models/Account');
-// const User = require('../models/User'); // Descomente se você tem e usa para buscar info do usuário
+const Friendship = require('../models/Friendship');
+const User = require('../models/User');
 const config = require('../config.json');
 
 class OrderService {
 
-    static async handleClientSentProof(interaction, orderId) {
-        try {
-            const order = await OrderLog.findById(orderId);
-            if (!order) {
-                return interaction.reply({ content: '❌ Pedido não encontrado.', ephemeral: true });
-            }
-
-            // Verifica se o comprovante já foi de fato registrado pelo listener de mensagens
-            if (order.status !== 'PENDING_MANUAL_APPROVAL' && !order.payment_proof_url) {
-                 await OrderLog.updateStatus(orderId, 'PENDING_PAYMENT_PROOF'); // Volta o status se necessário
-                 return interaction.reply({ content: '⏳ Por favor, envie a imagem do comprovante neste canal primeiro e depois clique neste botão novamente.', ephemeral: true });
-            }
-
-            // Se chegou aqui, a print já foi processada e o status é PENDING_MANUAL_APPROVAL
-            await interaction.reply({ content: '✅ Entendido! Seu comprovante foi recebido e será analisado pela nossa equipe. Você será notificado sobre o status.', ephemeral: true });
-            // A notificação ao admin já foi feita pelo listener messageCreate ao detectar a imagem.
-
-        } catch (error) {
-            console.error("Error in handleClientSentProof:", error);
-            await interaction.reply({ content: '❌ Ocorreu um erro ao processar sua confirmação.', ephemeral: true });
-        }
-    }
-
     static async sendOrderToAdminApproval(client, orderId) {
         try {
+            console.log(`[DEBUG OrderService] Starting sendOrderToAdminApproval for order ${orderId}`);
+
             const order = await OrderLog.findById(orderId);
+            console.log(`[DEBUG OrderService] Order retrieved:`, order ? `Status: ${order.status}` : 'null');
+
             if (!order || order.status !== 'PENDING_MANUAL_APPROVAL') {
-                console.log(`Pedido ${orderId} não encontrado ou status não é PENDING_MANUAL_APPROVAL (status atual: ${order.status}).`);
+                console.log(`[DEBUG OrderService] Order ${orderId} not found or wrong status. Current status: ${order?.status}`);
                 return;
             }
 
+            // Buscar informações do usuário
             let userTag = order.user_id;
-            let discordUser;
             try {
-                discordUser = await client.users.fetch(order.user_id);
+                const discordUser = await client.users.fetch(order.user_id);
                 userTag = discordUser.tag;
-            } catch (fetchError) {
-                console.error(`Não foi possível buscar o usuário ${order.user_id}:`, fetchError);
+                console.log(`[DEBUG OrderService] User found: ${userTag}`);
+            } catch (userError) {
+                console.error(`[ERROR OrderService] Error fetching user ${order.user_id}:`, userError);
             }
-            
-            const itemsDescription = Array.isArray(order.items_data) ? order.items_data.map(item => `• ${item.name} (${item.price.toLocaleString()} RP)`).join('\n') : 'Itens não disponíveis';
 
+            // ⭐ CORREÇÃO: Processar dados dos itens corretamente
+            let itemsDescription = 'Nenhum item encontrado';
+            let itemCount = 0;
+
+            console.log(`[DEBUG OrderService] Raw items_data:`, order.items_data);
+
+            if (order.items_data) {
+                let parsedItems;
+
+                // Tentar fazer parse se for string
+                if (typeof order.items_data === 'string') {
+                    try {
+                        parsedItems = JSON.parse(order.items_data);
+                        console.log(`[DEBUG OrderService] Parsed items from string:`, parsedItems);
+                    } catch (parseError) {
+                        console.error(`[ERROR OrderService] Error parsing items_data:`, parseError);
+                        parsedItems = [];
+                    }
+                } else {
+                    parsedItems = order.items_data;
+                    console.log(`[DEBUG OrderService] Items already parsed:`, parsedItems);
+                }
+
+                // Processar itens
+                if (Array.isArray(parsedItems) && parsedItems.length > 0) {
+                    itemCount = parsedItems.length;
+                    itemsDescription = parsedItems
+                        .map((item, index) => {
+                            const name = item.name || item.skin_name || 'Item sem nome';
+                            const price = item.price || item.skin_price || 0;
+                            return `${index + 1}. **${name}**\n   💎 ${price.toLocaleString()} RP`;
+                        })
+                        .join('\n');
+
+                    console.log(`[DEBUG OrderService] Processed ${itemCount} items`);
+                }
+            }
+
+            // ⭐ CRIAR EMBED DETALHADO
             const approvalEmbed = new EmbedBuilder()
-                .setTitle(`🧾 Novo Pedido para Aprovação - ID: ${order.id}`)
-                .setColor('#f0ad4e')
-                .addFields(
-                    { name: '👤 Cliente', value: `${userTag} (\`${order.user_id}\`)`, inline: true },
-                    { name: '🗨️ Canal do Pedido', value: `<#${order.order_channel_id}> (\`${order.order_channel_id}\`)`, inline: true },
-                    { name: '💎 Total RP', value: order.total_rp.toLocaleString(), inline: true },
-                    { name: '💶 Total EUR (aprox.)', value: `€${order.total_price ? order.total_price.toFixed(2) : 'N/A'}`, inline: true },
-                    { name: '📦 Itens', value: itemsDescription || 'Nenhum item listado.', inline: false },
-                    { name: '📅 Data do Pedido', value: order.created_at ? `<t:${Math.floor(new Date(order.created_at).getTime() / 1000)}:F>` : 'N/A', inline: false }
-                )
-                .setFooter({ text: `Aguardando aprovação manual do pagamento. ID do Pedido: ${order.id}` })
+                .setTitle(`🧾 Comprovante para Aprovação`)
+                .setDescription(`**Pedido ID:** ${order.id}\n**Status:** Aguardando aprovação manual`)
+                .addFields([
+                    {
+                        name: '👤 Cliente',
+                        value: `${userTag}\n\`${order.user_id}\``,
+                        inline: true
+                    },
+                    {
+                        name: '📍 Canal',
+                        value: `<#${order.order_channel_id}>`,
+                        inline: true
+                    },
+                    {
+                        name: '🔢 Quantidade de Itens',
+                        value: itemCount.toString(),
+                        inline: true
+                    },
+                    {
+                        name: '💎 Total RP',
+                        value: order.total_rp ? order.total_rp.toLocaleString() : 'N/A',
+                        inline: true
+                    },
+                    {
+                        name: '💰 Total EUR',
+                        value: order.total_price ? `€${order.total_price.toFixed(2)}` : 'N/A',
+                        inline: true
+                    },
+                    {
+                        name: '📅 Data do Pedido',
+                        value: order.created_at ? `<t:${Math.floor(new Date(order.created_at).getTime() / 1000)}:F>` : 'N/A',
+                        inline: true
+                    },
+                    {
+                        name: '📦 Itens do Pedido',
+                        value: itemsDescription.length > 1024 ? itemsDescription.substring(0, 1021) + '...' : itemsDescription,
+                        inline: false
+                    }
+                ])
+                .setColor('#faa61a')
                 .setTimestamp();
 
+            // Adicionar comprovante
             if (order.payment_proof_url) {
                 approvalEmbed.setImage(order.payment_proof_url);
-            } else {
-                approvalEmbed.addFields({name: '⚠️ Comprovante', value: 'O comprovante ainda não foi enviado ou não foi detectado corretamente.'});
+                approvalEmbed.addFields([
+                    { name: '📷 Comprovante', value: '[Imagem anexada acima ⬆️]', inline: false }
+                ]);
+                console.log(`[DEBUG OrderService] Payment proof attached: ${order.payment_proof_url}`);
             }
 
+            // ⭐ CRIAR BOTÕES
             const row = new ActionRowBuilder()
                 .addComponents(
                     new ButtonBuilder()
-                        .setCustomId(`approve_payment_${order.id}`)
+                        .setCustomId(`approve_order_${order.id}`)
                         .setLabel('✅ Aprovar Pagamento')
                         .setStyle(ButtonStyle.Success),
                     new ButtonBuilder()
-                        .setCustomId(`reject_payment_${order.id}`)
+                        .setCustomId(`reject_order_${order.id}`)
                         .setLabel('❌ Rejeitar Pagamento')
                         .setStyle(ButtonStyle.Danger)
                 );
 
-            const adminChannelId = config.orderApprovalChannelId || config.adminLogChannelId;
+            // Enviar para canal de admin
+            const adminChannelId = config.adminLogChannelId || config.approvalNeededChannelId || config.orderApprovalChannelId;
             if (!adminChannelId) {
-                 console.error("ID do canal de aprovação/log de pedidos não configurado em config.json.");
-                 return;
+                console.error(`[ERROR OrderService] No admin channel configured`);
+                return;
             }
-            const adminChannel = await client.channels.fetch(adminChannelId).catch(() => null);
-            
+
+            console.log(`[DEBUG OrderService] Sending to admin channel: ${adminChannelId}`);
+
+            const adminChannel = await client.channels.fetch(adminChannelId);
             if (adminChannel && adminChannel.isTextBased()) {
-                await adminChannel.send({ embeds: [approvalEmbed], components: [row] });
+                const sentMessage = await adminChannel.send({
+                    content: `🔔 **Novo comprovante para análise** - Pedido #${order.id}`,
+                    embeds: [approvalEmbed],
+                    components: [row]
+                });
+
+                console.log(`[DEBUG OrderService] Admin notification sent successfully. Message ID: ${sentMessage.id}`);
             } else {
-                console.error(`Canal de aprovação de pedidos (${adminChannelId}) não encontrado ou não é um canal de texto.`);
+                console.error(`[ERROR OrderService] Admin channel not found or not text-based`);
             }
 
         } catch (error) {
-            console.error('Error sending order to admin approval:', error);
+            console.error('[ERROR OrderService] Error in sendOrderToAdminApproval:', error);
+            console.error('[ERROR OrderService] Error stack:', error.stack);
         }
     }
 
-    static async presentAccountSelectionForDebit(interaction, orderId) {
+    static async approveOrder(interaction, orderId) {
+        try {
+            console.log(`[DEBUG OrderService.approveOrder] Starting approval for order ${orderId}`);
+            await interaction.deferUpdate();
+
+            const order = await OrderLog.findById(orderId);
+            if (!order) {
+                return await interaction.followUp({
+                    content: '❌ Pedido não encontrado.',
+                    ephemeral: true
+                });
+            }
+
+            if (order.status !== 'PENDING_MANUAL_APPROVAL') {
+                return await interaction.followUp({
+                    content: `❌ Este pedido não está aguardando aprovação. Status atual: ${order.status}`,
+                    ephemeral: true
+                });
+            }
+
+            // ⭐ BUSCAR CONTAS DO USUÁRIO
+            console.log(`[DEBUG OrderService.approveOrder] Looking for user accounts for Discord ID: ${order.user_id}`);
+
+            // Buscar usuário na tabela users pelo Discord ID
+            const User = require('../models/User');
+            const user = await User.findByDiscordId(order.user_id);
+            console.log(`[DEBUG OrderService.approveOrder] User found:`, user ? `ID ${user.id}` : 'none');
+
+            if (!user) {
+                return await interaction.followUp({
+                    content: '❌ Usuário não encontrado no sistema.',
+                    ephemeral: true
+                });
+            }
+
+            // Buscar amizades/contas do usuário
+            const Friendship = require('../models/Friendship');
+            const friendships = await Friendship.findByUserId(user.id);
+            console.log(`[DEBUG OrderService.approveOrder] Found ${friendships.length} friendships`);
+
+            if (friendships.length === 0) {
+                return await interaction.followUp({
+                    content: '❌ Este usuário não possui contas adicionadas ao sistema.',
+                    ephemeral: true
+                });
+            }
+
+            // ⭐ BUSCAR CONTAS COM RP SUFICIENTE
+            const Account = require('../models/Account');
+            const accountsWithBalance = [];
+
+            for (const friendship of friendships) {
+                const account = await Account.findById(friendship.account_id);
+                console.log(`[DEBUG OrderService.approveOrder] Checking account ${account?.nickname}: ${account?.rp_amount} RP (need ${order.total_rp})`);
+
+                if (account && account.rp_amount >= order.total_rp) {
+                    accountsWithBalance.push({
+                        ...account,
+                        lol_nickname: friendship.lol_nickname,
+                        lol_tag: friendship.lol_tag,
+                        friendship_id: friendship.id
+                    });
+                }
+            }
+
+            console.log(`[DEBUG OrderService.approveOrder] Found ${accountsWithBalance.length} accounts with sufficient balance`);
+
+            if (accountsWithBalance.length === 0) {
+                // Atualizar status para erro
+                await OrderLog.updateStatus(orderId, 'ERROR_INSUFFICIENT_BALANCE');
+
+                return await interaction.followUp({
+                    content: `❌ Nenhuma conta do usuário possui RP suficiente.\n**Necessário:** ${order.total_rp.toLocaleString()} RP\n\nVerifique as contas manualmente.`,
+                    ephemeral: true
+                });
+            }
+
+            // ⭐ ATUALIZAR STATUS PARA AGUARDANDO SELEÇÃO DE CONTA
+            await OrderLog.updateStatus(orderId, 'AWAITING_ACCOUNT_SELECTION');
+
+            // ⭐ CRIAR SELECT MENU COM CONTAS
+            const selectOptions = accountsWithBalance.map(account => ({
+                label: `${account.nickname} (${account.rp_amount.toLocaleString()} RP)`,
+                description: `Nick LoL: ${account.lol_nickname}#${account.lol_tag}`,
+                value: account.id.toString(),
+                emoji: '🎮'
+            }));
+
+            const selectMenu = new StringSelectMenuBuilder()
+                .setCustomId(`select_account_${orderId}`)
+                .setPlaceholder('Selecione a conta para debitar RP...')
+                .addOptions(selectOptions.slice(0, 25)); // Limite Discord
+
+            const row = new ActionRowBuilder().addComponents(selectMenu);
+
+            // ⭐ CRIAR EMBED DE SELEÇÃO
+            const selectionEmbed = new EmbedBuilder()
+                .setTitle(`💰 Selecionar Conta para Débito`)
+                .setDescription(
+                    `✅ **Pagamento aprovado para o Pedido #${orderId}**\n\n` +
+                    `**Cliente:** <@${order.user_id}>\n` +
+                    `**Total a debitar:** ${order.total_rp.toLocaleString()} RP\n` +
+                    `**Contas disponíveis:** ${accountsWithBalance.length}\n\n` +
+                    `Selecione qual conta deve ter o RP debitado:`
+                )
+                .setColor('#00ff00')
+                .setFooter({ text: `Admin: ${interaction.user.tag} | Pedido ID: ${orderId}` })
+                .setTimestamp();
+
+            // ⭐ EDITAR MENSAGEM ORIGINAL
+            await interaction.editReply({
+                content: `✅ **Aprovação em andamento...**`,
+                embeds: [selectionEmbed],
+                components: [row]
+            });
+
+            console.log(`[DEBUG OrderService.approveOrder] Account selection sent for order ${orderId}`);
+
+        } catch (error) {
+            console.error('[ERROR OrderService.approveOrder] Error:', error);
+            console.error('[ERROR OrderService.approveOrder] Stack:', error.stack);
+
+            try {
+                await interaction.followUp({
+                    content: `❌ Erro ao aprovar pedido: ${error.message}`,
+                    ephemeral: true
+                });
+            } catch (followUpError) {
+                console.error('[ERROR OrderService.approveOrder] FollowUp error:', followUpError);
+            }
+        }
+    }
+
+    static async rejectOrder(interaction, orderId) {
         try {
             await interaction.deferUpdate();
 
             const order = await OrderLog.findById(orderId);
             if (!order) {
-                return interaction.editReply({ content: '❌ Pedido não encontrado.', embeds:[], components: [] });
-            }
-            if (order.status !== 'PENDING_MANUAL_APPROVAL' && order.status !== 'AWAITING_DEBIT_ACCOUNT_SELECTION') { // Status que permitem esta ação
-                return interaction.editReply({
-                    content: `⚠️ Este pedido não está aguardando seleção de conta para débito (Status atual: ${order.status}).`,
-                    embeds: [], components: []
+                return await interaction.followUp({
+                    content: '❌ Pedido não encontrado.',
+                    ephemeral: true
                 });
             }
 
-            const availableAccounts = await Account.findAvailableForDebit(order.total_rp);
-            
-            if (!availableAccounts || availableAccounts.length === 0) {
-                await OrderLog.updateStatus(orderId, 'ERROR_NO_ACCOUNT_FOR_DEBIT'); // Novo status para indicar problema
-                return interaction.editReply({
-                    content: `⚠️ Pagamento Aprovado para o Pedido #${orderId}, mas NENHUMA conta de RP com saldo suficiente (${order.total_rp.toLocaleString()} RP) foi encontrada para o débito. Verifique as contas manualmente.`,
-                    embeds: [], components: []
-                });
+            // Atualizar status
+            await OrderLog.updateStatus(orderId, 'REJECTED');
+
+            // Notificar no canal do pedido
+            try {
+                const orderChannel = await interaction.client.channels.fetch(order.order_channel_id);
+                if (orderChannel) {
+                    const rejectionEmbed = new EmbedBuilder()
+                        .setTitle('❌ Pedido Rejeitado')
+                        .setDescription(
+                            `Seu pedido **#${orderId}** foi rejeitado.\n\n` +
+                            `**Motivo:** Comprovante de pagamento não aprovado.\n\n` +
+                            `Se você acredita que isso é um erro, ` +
+                            `entre em contato com nossa equipe.`
+                        )
+                        .setColor('#ed4245')
+                        .setTimestamp();
+
+                    await orderChannel.send({
+                        content: `<@${order.user_id}>`,
+                        embeds: [rejectionEmbed]
+                    });
+                }
+            } catch (error) {
+                console.error('Error notifying user:', error);
             }
-            
-            await OrderLog.updateStatus(orderId, 'AWAITING_DEBIT_ACCOUNT_SELECTION');
 
-            const selectOptions = availableAccounts.map(acc => ({
-                label: `${acc.nickname || `Conta ID ${acc.id}`} (Saldo RP: ${acc.rp_amount.toLocaleString()})`.substring(0,100),
-                description: `ID: ${acc.id} | Saldo Suficiente`.substring(0,100),
-                value: acc.id.toString()
-            }));
+            // Atualizar embed original
+            const originalEmbed = EmbedBuilder.from(interaction.message.embeds[0])
+                .setColor('#ed4245')
+                .setTitle('❌ Pedido Rejeitado')
+                .addFields([
+                    { name: '👤 Rejeitado por', value: `<@${interaction.user.id}>`, inline: true },
+                    { name: '⏰ Data', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true }
+                ]);
 
-            const selectMenu = new StringSelectMenuBuilder()
-                .setCustomId(`select_rp_account_for_order_${orderId}`)
-                .setPlaceholder('Selecione a conta para debitar o RP...')
-                .addOptions(selectOptions.slice(0, 25)); // Limite de 25 opções do Discord
-
-            const row = new ActionRowBuilder().addComponents(selectMenu);
-
-            const embed = new EmbedBuilder()
-                .setTitle(`💰 Selecionar Conta para Débito - Pedido #${orderId}`)
-                .setColor('#2db8ec')
-                .setDescription(`O pagamento para o pedido **#${orderId}** (Total: **${order.total_rp.toLocaleString()} RP**) foi aprovado.\n\nSelecione de qual conta o RP deve ser debitado:`)
-                .setFooter({text: `Admin: ${interaction.user.tag} | ID do Pedido: ${orderId}`})
-                .setTimestamp();
-            
-             await interaction.editReply({ embeds: [embed], components: [row] });
+            await interaction.editReply({
+                embeds: [originalEmbed],
+                components: []
+            });
 
         } catch (error) {
-            console.error('Error presenting account selection for debit:', error);
-            await interaction.followUp({ content: '❌ Erro ao apresentar seleção de contas.', ephemeral: true });
+            console.error('Error rejecting order:', error);
+            await interaction.followUp({
+                content: '❌ Erro ao rejeitar pedido.',
+                ephemeral: true
+            });
         }
     }
 
-    static async processOrderDebit(interaction, orderId, selectedAccountId) {
+    static async processAccountSelection(interaction, orderId, accountId) {
         try {
-            await interaction.deferUpdate();
+            console.log(`[DEBUG OrderService.processAccountSelection] Starting for order ${orderId}, account ${accountId}`);
 
             const order = await OrderLog.findById(orderId);
-            const account = await Account.findById(selectedAccountId); // Assume que Account.findById existe
-            const adminUserId = interaction.user.id;
+            const Account = require('../models/Account');
+            const account = await Account.findById(accountId);
 
-            if (!order) return interaction.editReply({ content: '❌ Pedido não encontrado.', embeds:[], components: [] });
-            if (!account) return interaction.editReply({ content: '❌ Conta de RP não encontrada.', embeds:[], components: [] });
+            console.log(`[DEBUG OrderService.processAccountSelection] Order status: ${order?.status}`);
+            console.log(`[DEBUG OrderService.processAccountSelection] Account balance: ${account?.rp_amount}`);
 
-            if (order.status !== 'AWAITING_DEBIT_ACCOUNT_SELECTION') {
-                 return interaction.editReply({ content: `⚠️ Este pedido não está aguardando débito (Status: ${order.status})`, embeds:[], components: [] });
+            if (!order || !account) {
+                return await interaction.followUp({
+                    content: '❌ Pedido ou conta não encontrada.',
+                    ephemeral: true
+                });
+            }
+
+            if (order.status !== 'AWAITING_ACCOUNT_SELECTION') {
+                return await interaction.followUp({
+                    content: `❌ Este pedido não está aguardando seleção de conta. Status: ${order.status}`,
+                    ephemeral: true
+                });
             }
 
             if (account.rp_amount < order.total_rp) {
-                return interaction.editReply({ content: `❌ A conta selecionada (${account.nickname || `ID ${account.id}`}) não possui RP suficiente (${account.rp_amount.toLocaleString()} RP) para cobrir o pedido de ${order.total_rp.toLocaleString()} RP.`, embeds:[], components: [] });
+                return await interaction.followUp({
+                    content: `❌ Conta selecionada não possui RP suficiente.\n**Saldo:** ${account.rp_amount.toLocaleString()} RP\n**Necessário:** ${order.total_rp.toLocaleString()} RP`,
+                    ephemeral: true
+                });
             }
 
+            // ⭐ DEBITAR RP DA CONTA
             const newBalance = account.rp_amount - order.total_rp;
-            await Account.updateBalance(selectedAccountId, newBalance); // Assume Account.updateBalance existe
+            console.log(`[DEBUG OrderService.processAccountSelection] Debiting RP: ${account.rp_amount} - ${order.total_rp} = ${newBalance}`);
 
-            await OrderLog.assignAdminAndAccount(orderId, adminUserId, selectedAccountId, 'COMPLETED', `Debitado da conta ${account.nickname || `ID ${account.id}`}. Saldo anterior: ${account.rp_amount}, debitado: ${order.total_rp}, novo saldo: ${newBalance}.`);
+            const updateResult = await Account.updateRP(accountId, newBalance);
+            console.log(`[DEBUG OrderService.processAccountSelection] Account update result: ${updateResult}`);
 
+            if (!updateResult) {
+                console.error(`[ERROR OrderService.processAccountSelection] Failed to update account balance`);
+                return await interaction.followUp({
+                    content: '❌ Erro ao debitar RP da conta.',
+                    ephemeral: true
+                });
+            }
+
+            // ⭐ FINALIZAR PEDIDO
+            const adminNotes = `RP debitado da conta "${account.nickname}" (ID: ${account.id}). Saldo anterior: ${account.rp_amount}, debitado: ${order.total_rp}, novo saldo: ${newBalance}`;
+
+            await OrderLog.assignAdminAndAccount(
+                orderId,
+                interaction.user.id,
+                accountId,
+                'COMPLETED',
+                adminNotes
+            );
+
+            console.log(`[DEBUG OrderService.processAccountSelection] Order marked as completed`);
+
+            // ⭐ EMBED DE SUCESSO
             const successEmbed = new EmbedBuilder()
-                .setTitle(`✅ Pedido #${orderId} Processado com Sucesso!`)
-                .setColor('#5cb85c')
-                .setDescription(`O RP foi debitado da conta **${account.nickname || `ID ${account.id}`}**.\n` +
-                                `Saldo anterior: ${account.rp_amount.toLocaleString()} RP\n` +
-                                `Valor debitado: ${order.total_rp.toLocaleString()} RP\n` +
-                                `Novo saldo: ${newBalance.toLocaleString()} RP`)
-                .addFields(
-                    {name: 'Processado por', value: interaction.user.tag, inline: true},
-                    {name: 'Cliente', value: `<@${order.user_id}>`, inline: true}
+                .setTitle('✅ Pedido Processado com Sucesso!')
+                .setDescription(
+                    `**Pedido #${orderId}** foi finalizado com sucesso.\n\n` +
+                    `**Conta utilizada:** ${account.nickname}\n` +
+                    `**RP debitado:** ${order.total_rp.toLocaleString()}\n` +
+                    `**Saldo anterior:** ${account.rp_amount.toLocaleString()}\n` +
+                    `**Novo saldo:** ${newBalance.toLocaleString()}`
                 )
+                .addFields([
+                    { name: '👤 Admin responsável', value: `<@${interaction.user.id}>`, inline: true },
+                    { name: '🎮 Cliente', value: `<@${order.user_id}>`, inline: true },
+                    { name: '📅 Processado em', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true }
+                ])
+                .setColor('#00ff00')
                 .setTimestamp();
-            
-            await interaction.editReply({ embeds: [successEmbed], components: [] });
 
-            // Notificar o cliente no canal do pedido
+            await interaction.editReply({
+                content: `✅ **Processamento concluído!**`,
+                embeds: [successEmbed],
+                components: [] // Remove componentes
+            });
+
+            // ⭐ NOTIFICAR CLIENTE
             try {
-                const orderChannel = await interaction.client.channels.fetch(order.order_channel_id).catch(() => null);
+                const orderChannel = await interaction.client.channels.fetch(order.order_channel_id);
                 if (orderChannel && orderChannel.isTextBased()) {
-                    const clientEmbed = new EmbedBuilder()
-                        .setTitle("🎉 Pedido Aprovado e Processado!")
-                        .setColor('#5cb85c')
-                        .setDescription("Seu pedido foi aprovado, o pagamento confirmado e os itens/RP foram processados!\n\nObrigado por comprar conosco!")
-                        .setFooter({text: `ID do Pedido: ${orderId}`})
-                        .setTimestamp();
-                    await orderChannel.send({ content: `<@${order.user_id}>`, embeds: [clientEmbed] });
-                } else {
-                     console.warn(`Canal do pedido ${order.order_channel_id} não encontrado ou não é de texto para notificar cliente do pedido #${orderId}.`);
-                }
-            } catch (channelError) {
-                console.error("Error fetching order channel or sending client notification:", channelError);
-                const adminLogChannelId = config.adminLogChannelId || config.orderApprovalChannelId;
-                if (adminLogChannelId) {
-                    const adminLogChannel = await interaction.client.channels.fetch(adminLogChannelId).catch(() => null);
-                    if (adminLogChannel && adminLogChannel.isTextBased()) {
-                        adminLogChannel.send(`⚠️ Erro ao notificar cliente <@${order.user_id}> sobre o Pedido #${orderId} no canal <#${order.order_channel_id}>. Por favor, notifique manualmente.`);
+                    // Processar itens para mostrar ao cliente
+                    let itemsList = 'Itens não disponíveis';
+                    if (order.items_data) {
+                        let parsedItems;
+                        if (typeof order.items_data === 'string') {
+                            parsedItems = JSON.parse(order.items_data);
+                        } else {
+                            parsedItems = order.items_data;
+                        }
+
+                        if (Array.isArray(parsedItems)) {
+                            itemsList = parsedItems
+                                .map((item, index) => {
+                                    const name = item.name || item.skin_name || 'Item';
+                                    return `${index + 1}. **${name}**`;
+                                })
+                                .join('\n');
+                        }
                     }
-                }
-            }
 
-        } catch (error) {
-            console.error('Error processing order debit:', error);
-            await interaction.editReply({ content: '❌ Erro ao processar débito do pedido.', embeds:[], components: [] });
-        }
-    }
-
-    static async rejectPayment(interaction, orderId) {
-        try {
-            const modal = new ModalBuilder()
-                .setCustomId(`reject_order_reason_modal_${orderId}`)
-                .setTitle(`Rejeitar Pedido #${orderId}`);
-
-            const reasonInput = new TextInputBuilder()
-                .setCustomId('rejection_reason')
-                .setLabel('Motivo da Rejeição (para o cliente)')
-                .setStyle(TextInputStyle.Paragraph)
-                .setPlaceholder('Ex: Comprovante inválido, pagamento não recebido, etc.')
-                .setRequired(false) // Pode ser opcional se houver notas internas
-                .setMaxLength(500);
-            
-            const internalNotesInput = new TextInputBuilder()
-                .setCustomId('internal_notes')
-                .setLabel('Notas Internas (opcional, para a equipe)')
-                .setStyle(TextInputStyle.Paragraph)
-                .setPlaceholder('Detalhes adicionais.')
-                .setRequired(false)
-                .setMaxLength(500);
-
-            modal.addComponents(new ActionRowBuilder().addComponents(reasonInput), new ActionRowBuilder().addComponents(internalNotesInput));
-            await interaction.showModal(modal);
-
-        } catch (error) {
-            console.error('Error initiating payment rejection:', error);
-            await interaction.reply({ content: '❌ Erro ao iniciar rejeição do pagamento.', ephemeral: true });
-        }
-    }
-    
-    static async finalizeRejection(interaction, orderId, reasonForClient, internalNotes) {
-        try {
-            await interaction.deferReply({ephemeral: true}); // Ação de admin, pode ser efêmera
-            const adminUserId = interaction.user.id;
-
-            const fullAdminNotes = `Cliente: ${reasonForClient || 'N/A'} | Interno: ${internalNotes || 'N/A'}`;
-            await OrderLog.setRejected(orderId, adminUserId, fullAdminNotes);
-            
-            const order = await OrderLog.findById(orderId);
-            if (!order) return interaction.editReply({content: '❌ Pedido não encontrado após tentativa de rejeição.'});
-
-            const rejectionEmbed = new EmbedBuilder()
-                .setTitle(`❌ Pedido #${orderId} Rejeitado`)
-                .setColor('#d9534f')
-                .setDescription(`O pedido foi marcado como rejeitado pelo admin ${interaction.user.tag}.`)
-                .addFields(
-                    { name: 'Motivo para o cliente', value: reasonForClient || 'Não especificado.' },
-                    { name: 'Notas Internas Completas', value: fullAdminNotes }
-                )
-                .setTimestamp();
-
-            const adminChannelId = config.orderApprovalChannelId || config.adminLogChannelId;
-             if (!adminChannelId) {
-                 console.error("ID do canal de aprovação/log de pedidos não configurado em config.json para rejeição.");
-                 return interaction.editReply({ content: `✅ Pedido #${orderId} rejeitado, mas não foi possível logar no canal de admin (ID não configurado).`});
-            }
-            const adminChannel = await interaction.client.channels.fetch(adminChannelId).catch(() => null);
-
-            if (adminChannel && adminChannel.isTextBased()) {
-                // Tentar editar a mensagem original se tivermos o ID, senão enviar nova
-                // Por simplicidade, enviaremos uma nova confirmação de rejeição.
-                // A mensagem original com botões de aprovar/rejeitar pode ser apenas desabilitada ou removida manualmente.
-                await adminChannel.send({embeds: [rejectionEmbed]});
-
-                // Opcional: Desabilitar botões na mensagem original de aprovação/rejeição
-                if (interaction.message && interaction.message.components.length > 0) {
-                    const disabledComponents = interaction.message.components.map(row => {
-                        const newRow = new ActionRowBuilder();
-                        row.components.forEach(component => {
-                            newRow.addComponents(ButtonBuilder.from(component).setDisabled(true));
-                        });
-                        return newRow;
-                    });
-                    await interaction.message.edit({ components: disabledComponents }).catch(console.error);
-                }
-            }
-            
-            await interaction.editReply({ content: `✅ Pedido #${orderId} rejeitado com sucesso.`});
-
-            // Notificar o cliente
-            try {
-                const orderChannel = await interaction.client.channels.fetch(order.order_channel_id).catch(() => null);
-                if (orderChannel && orderChannel.isTextBased()) {
                     const clientEmbed = new EmbedBuilder()
-                        .setTitle("😥 Pedido Rejeitado")
-                        .setColor('#d9534f')
-                        .setDescription("Infelizmente, houve um problema com o seu pedido e ele foi rejeitado.")
-                        .addFields({ name: "Motivo", value: reasonForClient || "Por favor, entre em contato com o suporte para mais detalhes."})
-                        .setFooter({text: `ID do Pedido: ${orderId}`})
+                        .setTitle('🎉 Pedido Aprovado e Processado!')
+                        .setDescription(
+                            `Seu pedido **#${orderId}** foi aprovado e os itens foram enviados!\n\n` +
+                            `**Conta de destino:** ${account.nickname}\n` +
+                            `**Total processado:** ${order.total_rp.toLocaleString()} RP\n\n` +
+                            `**Itens entregues:**\n${itemsList}\n\n` +
+                            `✨ Obrigado por comprar conosco! Os itens já estão disponíveis na sua conta.`
+                        )
+                        .setColor('#00ff00')
+                        .setFooter({ text: `Pedido ID: ${orderId}` })
                         .setTimestamp();
-                    await orderChannel.send({ content: `<@${order.user_id}>`, embeds: [clientEmbed] });
-                } else {
-                    console.warn(`Canal do pedido ${order.order_channel_id} não encontrado para notificar cliente da rejeição do pedido #${orderId}.`);
+
+                    await orderChannel.send({
+                        content: `<@${order.user_id}> 🎉 **Pedido aprovado!**`,
+                        embeds: [clientEmbed]
+                    });
+
+                    console.log(`[DEBUG OrderService.processAccountSelection] Client notification sent`);
                 }
             } catch (channelError) {
-                 console.error("Error fetching order channel or sending client rejection notification:", channelError);
-                 if (adminChannel && adminChannel.isTextBased()) { // Log no canal de admin se falhar
-                     adminChannel.send(`⚠️ Erro ao notificar cliente <@${order.user_id}> sobre a REJEIÇÃO do Pedido #${orderId} no canal <#${order.order_channel_id}>. Por favor, notifique manualmente.`)
-                 }
+                console.error(`[ERROR OrderService.processAccountSelection] Error notifying client:`, channelError);
             }
 
+            console.log(`[DEBUG OrderService.processAccountSelection] Process completed successfully`);
+
         } catch (error) {
-            console.error("Error in finalizeRejection:", error);
-            await interaction.editReply({content: '❌ Erro ao finalizar a rejeição do pedido.'});
+            console.error('[ERROR OrderService.processAccountSelection] Error:', error);
+            console.error('[ERROR OrderService.processAccountSelection] Stack:', error.stack);
+
+            try {
+                await interaction.followUp({
+                    content: `❌ Erro ao processar seleção: ${error.message}`,
+                    ephemeral: true
+                });
+            } catch (followUpError) {
+                console.error('[ERROR OrderService.processAccountSelection] FollowUp error:', followUpError);
+            }
         }
     }
 }

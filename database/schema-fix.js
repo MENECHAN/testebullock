@@ -31,6 +31,45 @@ async function fixCartItemsTable() {
     }
 }
 
+async function fixCartsTable() {
+    try {
+        console.log('🔄 Verificando estrutura da tabela carts...');
+
+        // Verificar se a coluna 'updated_at' existe
+        const columns = await db.all("PRAGMA table_info(carts)");
+        const hasUpdatedAt = columns.some(col => col.name === 'updated_at');
+
+        if (!hasUpdatedAt) {
+            console.log('⚠️ Coluna "updated_at" não encontrada na tabela carts. Adicionando...');
+            await db.run('ALTER TABLE carts ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP');
+            console.log('✅ Coluna "updated_at" adicionada à tabela carts com sucesso!');
+        } else {
+            console.log('ℹ️ Coluna "updated_at" já existe na tabela carts.');
+        }
+
+        console.log('✅ Estrutura da tabela carts verificada e corrigida!');
+    } catch (error) {
+        console.error('❌ Erro ao corrigir tabela carts:', error);
+        throw error;
+    }
+}
+
+async function applyDatabaseFixes() {
+    try {
+        console.log('🔄 Aplicando correções no banco de dados...');
+
+        await fixCartItemsTable();
+        await createFriendshipLogsTable();
+        await createOrderLogsTable();
+        await fixCartsTable(); // ⭐ ADICIONAR ESTA LINHA
+
+        console.log('✅ Todas as correções aplicadas com sucesso!');
+    } catch (error) {
+        console.error('❌ Erro ao aplicar correções:', error);
+        throw error;
+    }
+}
+
 // Função para criar tabela de logs de amizade
 async function createFriendshipLogsTable() {
     try {
@@ -85,6 +124,8 @@ async function createOrderLogsTable() {
                 
                 // Remover a tabela atual
                 await db.run('DROP TABLE order_logs');
+                await db.run('ALTER TABLE cart_items ADD COLUMN category TEXT');
+                await db.run('ALTER TABLE cart_items ADD COLUMN original_item_id INTEGER');
                 
                 // Recriar tabela com estrutura correta
                 await db.run(`
@@ -226,5 +267,5 @@ module.exports = {
     fixCartItemsTable,
     createFriendshipLogsTable,
     createOrderLogsTable,
-    applyDatabaseFixes
-};
+    fixCartsTable, // ⭐ EXPORTAR A NOVA FUNÇÃO
+    applyDatabaseFixes};

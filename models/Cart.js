@@ -3,8 +3,11 @@ const db = require('../database/connection');
 class Cart {
     static async findById(id) {
         try {
+            console.log(`[DEBUG Cart.findById] Searching for cart ID: ${id}`);
             const query = 'SELECT * FROM carts WHERE id = ?';
-            return await db.get(query, [id]);
+            const cart = await db.get(query, [id]);
+            console.log(`[DEBUG Cart.findById] Cart found:`, cart ? `Status: ${cart.status}` : 'Not found');
+            return cart;
         } catch (error) {
             console.error('Error finding cart by ID:', error);
             throw error;
@@ -13,8 +16,41 @@ class Cart {
 
     static async findActiveByUserId(userId) {
         try {
-            const query = 'SELECT * FROM carts WHERE user_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1';
-            return await db.get(query, [userId, 'active']);
+            console.log(`[DEBUG Cart.findActiveByUserId] Searching for user: ${userId}`);
+
+            // Tentar buscar diretamente por user_id (caso seja Discord ID)
+            let query = 'SELECT * FROM carts WHERE user_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1';
+            let cart = await db.get(query, [userId, 'active']);
+
+            if (cart) {
+                console.log(`[DEBUG Cart.findActiveByUserId] Found active cart directly: ${cart.id}`);
+                return cart;
+            }
+
+            // Se não encontrar, verificar se user_id é um número (ID da tabela users)
+            if (!isNaN(userId)) {
+                console.log(`[DEBUG Cart.findActiveByUserId] Trying numeric lookup for ID: ${userId}`);
+                query = 'SELECT * FROM carts WHERE user_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1';
+                cart = await db.get(query, [parseInt(userId), 'active']);
+
+                if (cart) {
+                    console.log(`[DEBUG Cart.findActiveByUserId] Found cart with numeric ID: ${cart.id}`);
+                    return cart;
+                }
+            }
+
+            // Tentar através da tabela users (últim recurso)
+            query = `
+            SELECT c.* FROM carts c
+            JOIN users u ON CAST(c.user_id AS TEXT) = u.discord_id
+            WHERE u.discord_id = ? AND c.status = ?
+            ORDER BY c.created_at DESC LIMIT 1
+        `;
+            cart = await db.get(query, [userId, 'active']);
+
+            console.log(`[DEBUG Cart.findActiveByUserId] Final result:`, cart ? `Cart ID ${cart.id}` : 'No active cart found');
+            return cart;
+
         } catch (error) {
             console.error('Error finding active cart:', error);
             throw error;
@@ -32,18 +68,27 @@ class Cart {
     }
 
     static async create(userId, channelId) {
-        try {
-            const query = `
-                INSERT INTO carts (user_id, ticket_channel_id, status, total_rp, total_price) 
-                VALUES (?, ?, 'active', 0, 0.00)
-            `;
-            const result = await db.run(query, [userId, channelId]);
-            return await this.findById(result.lastID);
-        } catch (error) {
-            console.error('Error creating cart:', error);
-            throw error;
-        }
+    try {
+        console.log(`[DEBUG Cart.create] Creating cart for user: ${userId}, channel: ${channelId}`);
+        
+        // ⭐ CORREÇÃO: Remover updated_at da query
+        const query = `
+            INSERT INTO carts (user_id, ticket_channel_id, status, total_rp, total_price, created_at) 
+            VALUES (?, ?, 'active', 0, 0.00, CURRENT_TIMESTAMP)
+        `;
+        
+        const result = await db.run(query, [userId, channelId]);
+        console.log(`[DEBUG Cart.create] Cart created with ID: ${result.lastID}`);
+        
+        const newCart = await this.findById(result.lastID);
+        console.log(`[DEBUG Cart.create] Retrieved new cart:`, newCart);
+        
+        return newCart;
+    } catch (error) {
+        console.error('Error creating cart:', error);
+        throw error;
     }
+}
 
     static async updateStatus(id, status) {
         try {
@@ -56,29 +101,39 @@ class Cart {
         }
     }
 
-    static async updateTotals(cartId, totalRP = null, totalPrice = null) {
-        try {
-            // If totals not provided, calculate them
-            if (totalRP === null || totalPrice === null) {
-                const items = await this.getItems(cartId);
-                totalRP = items.reduce((sum, item) => sum + item.skin_price, 0);
-                totalPrice = totalRP * 0.01;
-            }
+static async updateTotals(cartId, totalRP = null, totalPrice = null) {
+    try {
+        // If totals not provided, calculate them
+        if (totalRP === null || totalPrice === null) {
+            const items = await this.getItems(cartId);
+            totalRP = items.reduce((sum, item) => sum + item.skin_price, 0);
+            totalPrice = totalRP * 0.01;
+        }
 
+        // ⭐ CORREÇÃO: Verificar se a coluna updated_at existe
+        try {
+            // Tentar com updated_at primeiro
+            const query = 'UPDATE carts SET total_rp = ?, total_price = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?';
+            const result = await db.run(query, [totalRP, totalPrice, cartId]);
+            return result.changes > 0;
+        } catch (updateError) {
+            // Se falhar (coluna não existe), tentar sem updated_at
+            console.log(`[DEBUG Cart.updateTotals] Trying without updated_at for cart ${cartId}`);
             const query = 'UPDATE carts SET total_rp = ?, total_price = ? WHERE id = ?';
             const result = await db.run(query, [totalRP, totalPrice, cartId]);
             return result.changes > 0;
-        } catch (error) {
-            console.error('Error updating cart totals:', error);
-            throw error;
         }
+    } catch (error) {
+        console.error('Error updating cart totals:', error);
+        throw error;
     }
+}
 
     static async delete(id) {
         try {
             // Delete cart items first
             await db.run('DELETE FROM cart_items WHERE cart_id = ?', [id]);
-            
+
             // Then delete cart
             const query = 'DELETE FROM carts WHERE id = ?';
             const result = await db.run(query, [id]);
@@ -92,14 +147,14 @@ class Cart {
     static async addItem(cartId, skinName, skinPrice, skinImageUrl = null, category = null, originalItemId = null) {
         try {
             const query = `
-                INSERT INTO cart_items (cart_id, skin_name, skin_price, skin_image_url, category, original_item_id) 
-                VALUES (?, ?, ?, ?, ?, ?)
-            `;
+            INSERT INTO cart_items (cart_id, skin_name, skin_price, skin_image_url, category, original_item_id, added_at) 
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        `;
             const result = await db.run(query, [cartId, skinName, skinPrice, skinImageUrl, category, originalItemId]);
-            
+
             // Update cart totals
             await this.updateTotals(cartId);
-            
+
             return result.lastID;
         } catch (error) {
             console.error('Error adding item to cart:', error);
@@ -111,20 +166,20 @@ class Cart {
         try {
             // Get cart ID before deleting
             const item = await db.get('SELECT cart_id FROM cart_items WHERE id = ?', [itemId]);
-            
+
             if (!item) {
                 return false;
             }
 
             const query = 'DELETE FROM cart_items WHERE id = ?';
             const result = await db.run(query, [itemId]);
-            
+
             if (result.changes > 0) {
                 // Update cart totals
                 await this.updateTotals(item.cart_id);
                 return true;
             }
-            
+
             return false;
         } catch (error) {
             console.error('Error removing item from cart:', error);
@@ -146,10 +201,10 @@ class Cart {
         try {
             const query = 'DELETE FROM cart_items WHERE cart_id = ?';
             const result = await db.run(query, [cartId]);
-            
+
             // Update cart totals to 0
             await this.updateTotals(cartId, 0, 0);
-            
+
             return result.changes;
         } catch (error) {
             console.error('Error clearing cart items:', error);
@@ -202,7 +257,7 @@ class Cart {
                 FROM carts
             `;
             const result = await db.get(query);
-            
+
             return {
                 totalCarts: result.total_carts,
                 activeCarts: result.active_carts || 0,
@@ -290,7 +345,7 @@ class Cart {
 
     static async findItemInCart(cartId, originalItemId) {
         try {
-            const query = 'SELECT * FROM cart_items WHERE cart_id = ? AND original_item_id = ?';
+            const query = 'SELECT * FROM cart_items WHERE cart_id = ? AND original_item_id = ? LIMIT 1';
             return await db.get(query, [cartId, originalItemId]);
         } catch (error) {
             console.error('Error finding item in cart:', error);
@@ -340,15 +395,15 @@ class Cart {
                     AVG(skin_price) as avg_price
                 FROM cart_items
             `;
-            
+
             const params = [];
             if (cartId) {
                 query += ' WHERE cart_id = ?';
                 params.push(cartId);
             }
-            
+
             query += ' GROUP BY category ORDER BY item_count DESC';
-            
+
             return await db.all(query, params);
         } catch (error) {
             console.error('Error getting category statistics:', error);

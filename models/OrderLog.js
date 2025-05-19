@@ -1,6 +1,79 @@
 const db = require('../database/connection');
 
 class OrderLog {
+
+    // Método para adicionar comprovante de pagamento
+    static async addPaymentProof(orderId, paymentProofUrl) {
+        try {
+            console.log(`[DEBUG OrderLog.addPaymentProof] Starting update for order ${orderId}`);
+
+            // Método direto sem verificações extras
+            const db = require('../database/connection');
+
+            const query = 'UPDATE order_logs SET payment_proof_url = ?, status = ? WHERE id = ?';
+            const params = [paymentProofUrl, 'PENDING_MANUAL_APPROVAL', orderId];
+
+            console.log(`[DEBUG OrderLog.addPaymentProof] Executing direct update...`);
+
+            const result = await db.run(query, params);
+
+            console.log(`[DEBUG OrderLog.addPaymentProof] Update completed. Changes: ${result.changes}`);
+
+            return result.changes > 0;
+
+        } catch (error) {
+            console.error(`[ERROR OrderLog.addPaymentProof] Error:`, error);
+            throw error;
+        }
+    }
+
+    static async create(userId, cartId, itemsData, totalRp, totalPrice, status = 'PENDING_CHECKOUT', paymentProofUrl = null, orderChannelId = null) {
+        try {
+            console.log(`[DEBUG OrderLog.create] Starting creation with parameters:`, {
+                userId, cartId, itemsCount: itemsData?.length, totalRp, totalPrice, status
+            });
+
+            // Usar o método correto do database connection
+            const db = require('../database/connection');
+
+            const query = `
+            INSERT INTO order_logs (
+                user_id, cart_id, items_data, total_rp, total_price, 
+                status, payment_proof_url, order_channel_id, 
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        `;
+
+            const params = [
+                userId,
+                cartId,
+                JSON.stringify(itemsData),
+                totalRp,
+                totalPrice,
+                status,
+                paymentProofUrl,
+                orderChannelId
+            ];
+
+            console.log(`[DEBUG OrderLog.create] Executing insert...`);
+
+            // Usar o método run do database connection
+            const result = await db.run(query, params);
+
+            console.log(`[DEBUG OrderLog.create] Insert completed, lastID: ${result.lastID}`);
+            return result.lastID;
+
+        } catch (error) {
+            console.error(`[ERROR OrderLog.create] Database error:`, error);
+            console.error(`[ERROR OrderLog.create] Error details:`, {
+                message: error.message,
+                code: error.code,
+                errno: error.errno
+            });
+            throw error;
+        }
+    }
+
     static async findById(id) {
         try {
             const query = 'SELECT * FROM order_logs WHERE id = ?';
@@ -24,6 +97,27 @@ class OrderLog {
             return await db.all(query, [cartId]);
         } catch (error) {
             console.error('Error finding order logs by cart ID:', error);
+            throw error;
+        }
+    }
+
+    static async findAvailableForDebit(requiredRP) {
+        try {
+            const query = 'SELECT * FROM accounts WHERE rp_amount >= ? ORDER BY rp_amount DESC';
+            return await db.all(query, [requiredRP]);
+        } catch (error) {
+            console.error('Error finding accounts for debit:', error);
+            throw error;
+        }
+    }
+
+    static async updateRP(id, newAmount) {
+        try {
+            const query = 'UPDATE accounts SET rp_amount = ? WHERE id = ?';
+            const result = await db.run(query, [newAmount, id]);
+            return result.changes > 0;
+        } catch (error) {
+            console.error('Error updating RP amount:', error);
             throw error;
         }
     }
@@ -60,36 +154,39 @@ class OrderLog {
         }
     }
 
-        static async findByCartIdAndStatus(cartId, statusArray) {
-        if (!Array.isArray(statusArray) || statusArray.length === 0) {
-            console.warn("findByCartIdAndStatus foi chamado com statusArray inválido.");
-            return null;
-        }
-        // Cria uma string de placeholders (?, ?, ?) para a cláusula IN
-        const placeholders = statusArray.map(() => '?').join(',');
-        const query = `SELECT * FROM order_logs WHERE cart_id = ? AND status IN (${placeholders}) ORDER BY created_at DESC LIMIT 1`;
-        
+    static async findByCartIdAndStatus(cartId, statusArray) {
         try {
-            // Usar db.get() pois esperamos no máximo 1 linha devido ao LIMIT 1
+            if (!Array.isArray(statusArray) || statusArray.length === 0) {
+                console.warn("findByCartIdAndStatus called with invalid statusArray");
+                return null;
+            }
+
+            // Criar placeholders para a query IN
+            const placeholders = statusArray.map(() => '?').join(',');
+            const query = `SELECT * FROM order_logs WHERE cart_id = ? AND status IN (${placeholders}) ORDER BY created_at DESC LIMIT 1`;
+
             const row = await db.get(query, [cartId, ...statusArray]);
+
             if (row && row.items_data) {
                 try {
                     row.items_data = JSON.parse(row.items_data);
                 } catch (e) {
-                    console.error(`Falha ao fazer parse de items_data para o pedido com cartId ${cartId} em findByCartIdAndStatus:`, e, "Dado bruto:", row.items_data);
-                    row.items_data = []; // Fallback seguro
+                    console.error(`Error parsing items_data for order ${row.id}:`, e);
+                    row.items_data = [];
                 }
             } else if (row) {
-                row.items_data = []; // Caso items_data seja null/undefined
+                row.items_data = [];
             }
+
             return row;
         } catch (error) {
-            console.error('Erro ao buscar order log por cart ID e status:', error);
+            console.error('Error finding order by cart ID and status:', error);
             throw error;
         }
     }
 
-        static async create(userId, cartId, itemsData, totalRp, totalPrice, status = 'PENDING_CHECKOUT', paymentProofUrl = null, orderChannelId = null) {
+
+    static async create(userId, cartId, itemsData, totalRp, totalPrice, status = 'PENDING_CHECKOUT', paymentProofUrl = null, orderChannelId = null) {
         const query = `INSERT INTO order_logs (user_id, cart_id, items_data, total_rp, total_price, status, payment_proof_url, order_channel_id, created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`;
         try {
@@ -104,7 +201,7 @@ class OrderLog {
                     status,
                     paymentProofUrl,
                     orderChannelId
-                ], function(err) { // Não usar arrow function aqui para ter acesso ao `this` correto
+                ], function (err) { // Não usar arrow function aqui para ter acesso ao `this` correto
                     if (err) {
                         reject(err);
                     } else {
@@ -148,10 +245,10 @@ class OrderLog {
         }
         query += ' WHERE id = ?';
         params.push(orderId);
-        
+
         try {
             const result = await new Promise((resolve, reject) => {
-                db.run(query, params, function(err) {
+                db.run(query, params, function (err) {
                     if (err) reject(err);
                     else resolve({ affectedRows: this.changes });
                 });
@@ -168,7 +265,7 @@ class OrderLog {
         const params = [paymentProofUrl, 'PENDING_MANUAL_APPROVAL', orderId];
         try {
             const result = await new Promise((resolve, reject) => {
-                db.run(query, params, function(err) {
+                db.run(query, params, function (err) {
                     if (err) reject(err);
                     else resolve({ affectedRows: this.changes });
                 });
@@ -185,7 +282,7 @@ class OrderLog {
                        WHERE id = ?`;
         try {
             const result = await new Promise((resolve, reject) => {
-                db.run(query, [adminUserId, debitedAccountId, newStatus, adminNotes, orderId], function(err) {
+                db.run(query, [adminUserId, debitedAccountId, newStatus, adminNotes, orderId], function (err) {
                     if (err) reject(err);
                     else resolve({ affectedRows: this.changes });
                 });
@@ -202,7 +299,7 @@ class OrderLog {
                        WHERE id = ?`;
         try {
             const result = await new Promise((resolve, reject) => {
-                db.run(query, [adminUserId, adminNotes, orderId], function(err) {
+                db.run(query, [adminUserId, adminNotes, orderId], function (err) {
                     if (err) reject(err);
                     else resolve({ affectedRows: this.changes });
                 });
@@ -267,7 +364,7 @@ class OrderLog {
                 FROM order_logs
             `;
             const result = await db.get(query);
-            
+
             return {
                 totalOrders: result.total_orders,
                 pendingOrders: result.pending_orders || 0,
@@ -329,7 +426,7 @@ class OrderLog {
                 WHERE account_id = ? AND action = 'approved'
             `;
             const result = await db.get(query, [accountId]);
-            
+
             return {
                 orderCount: result.order_count || 0,
                 totalRpSpent: result.total_rp_spent || 0,

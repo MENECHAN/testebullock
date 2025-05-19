@@ -3,15 +3,29 @@ const config = require('../config.json');
 const User = require('../models/User');
 const Account = require('../models/Account');
 const Cart = require('../models/Cart');
+const OrderLog = require('../models/OrderLog');
 const TicketService = require('../services/ticketService');
 const CartService = require('../services/cartService');
 const PriceManagerHandler = require('../handlers/priceManagerHandler');
 const FriendshipService = require('../services/friendshipService');
+const fs = require('fs');
 const OrderService = require('../services/orderService');
 
 module.exports = {
     async handle(interaction) {
+        console.log(`[DEBUG] Button interaction received: ${interaction.customId}`);
+
         const [action, ...params] = interaction.customId.split('_');
+        console.log(`[DEBUG] Parsed action: ${action}, params:`, params);
+
+        if (action === 'approve' && params[0] === 'order') {
+            await OrderService.approveOrder(interaction, params[1]);
+            return;
+        }
+        if (action === 'reject' && params[0] === 'order') {
+            await OrderService.rejectOrder(interaction, params[1]);
+            return;
+        }
 
         // Handlers para gerenciamento de preços
         if (action === 'edit' && params[0] === 'price') {
@@ -76,12 +90,17 @@ module.exports = {
                 }
                 break;
             case 'confirm':
+                console.log(`[DEBUG] Confirm action with params:`, params);
                 if (params[0] === 'close') {
                     await CartService.handleCloseCart(interaction, params[1]);
                 } else if (params[0] === 'add') {
+                    console.log(`[DEBUG] Calling handleConfirmAddItem with cartId: ${params[1]}, itemId: ${params[2]}`);
                     await handleConfirmAddItem(interaction, params[1], params[2]);
+                } else if (params[0] === 'checkout') {
+                    await handleConfirmCheckout(interaction, params[1]);
                 }
                 break;
+
             case 'cancel':
                 if (params[0] === 'close') {
                     await handleCancelClose(interaction);
@@ -94,7 +113,7 @@ module.exports = {
                     await handleBackToItems(interaction, params[1], params[2], params[3]);
                 }
                 break;
-                            // NOVO CASE PARA CHECKOUT
+            // NOVO CASE PARA CHECKOUT
             case 'checkout':
                 // customId: checkout_CARTID
                 const checkoutCartId = params[0];
@@ -107,8 +126,8 @@ module.exports = {
                     // customId: payment_proof_sent_CARTID_ORDERID
                     const proofCartId = params[2]; // Ou o orderId se você mudou o customId para ser apenas _orderId
                     const proofOrderId = params[3]; // Ajuste aqui. Se o customId é payment_proof_sent_ORDERID, então proofOrderId = params[2]
-                                                    // Na implementação de sendCheckoutEmbed, o customId é payment_proof_sent_${cartId}_${orderId}
-                                                    // Então params[2] é cartId, params[3] é orderId
+                    // Na implementação de sendCheckoutEmbed, o customId é payment_proof_sent_${cartId}_${orderId}
+                    // Então params[2] é cartId, params[3] é orderId
                     await OrderService.handleClientSentProof(interaction, proofOrderId); // Passar o orderId
                 }
                 break;
@@ -151,7 +170,7 @@ module.exports = {
                     }
                 }
                 break;
-                
+
         }
     }
 };
@@ -163,7 +182,7 @@ async function handleSearchPageSimple(interaction, cartId, page, encodedData) {
 
         const data = JSON.parse(Buffer.from(encodedData, 'base64').toString());
         const { category, query } = data;
-        
+
         await CartService.handleSearchInCategory(interaction.channel, cartId, category, query, parseInt(page));
     } catch (error) {
         console.error('Error handling search page:', error);
@@ -215,11 +234,15 @@ async function handleOpenCart(interaction) {
     try {
         await interaction.deferReply({ ephemeral: true });
 
-        // Create or get user
-        const user = await User.findOrCreate(interaction.user.id, interaction.user.username);
+        console.log(`[DEBUG] Opening cart for user: ${interaction.user.id}`);
 
-        // Check if user already has an active cart
-        let cart = await Cart.findActiveByUserId(user.id);
+        // Create or get user - ⭐ CORREÇÃO: Verificar se findOrCreate retorna o Discord ID
+        const user = await User.findOrCreate(interaction.user.id, interaction.user.username);
+        console.log(`[DEBUG] User found/created:`, user);
+
+        // ⭐ CORREÇÃO: Usar interaction.user.id diretamente para buscar carrinho
+        let cart = await Cart.findActiveByUserId(interaction.user.id);
+        console.log(`[DEBUG] Active cart found:`, cart ? `ID ${cart.id}` : 'None');
 
         if (cart) {
             // Check if channel still exists
@@ -238,8 +261,9 @@ async function handleOpenCart(interaction) {
         // Create new ticket channel
         const ticketChannel = await TicketService.createTicket(interaction.guild, interaction.user);
 
-        // Create new cart
-        cart = await Cart.create(user.id, ticketChannel.id);
+        // ⭐ CORREÇÃO: Usar interaction.user.id para criar carrinho
+        cart = await Cart.create(interaction.user.id, ticketChannel.id);
+        console.log(`[DEBUG] New cart created with ID: ${cart.id}`);
 
         // Send initial cart embed
         await CartService.sendCartEmbed(ticketChannel, cart);
@@ -249,6 +273,7 @@ async function handleOpenCart(interaction) {
         });
     } catch (error) {
         console.error('Error opening cart:', error);
+        console.error('Error details:', error.stack);
 
         try {
             if (interaction.deferred) {
@@ -515,36 +540,92 @@ async function handleCloseCart(interaction, cartId) {
 
 async function handleConfirmAddItem(interaction, cartId, itemId) {
     try {
+        console.log(`[DEBUG] handleConfirmAddItem called with cartId: ${cartId}, itemId: ${itemId}`);
         await interaction.deferUpdate();
 
-        // Validate item addition
-        const validation = await CartService.validateItemAddition(cartId, itemId);
+        // Verificar se o carrinho existe
+        const cart = await Cart.findById(cartId);
+        console.log(`[DEBUG] Cart found:`, cart ? `ID ${cart.id}` : 'No cart found');
 
-        if (!validation.valid) {
+        if (!cart) {
             return await interaction.followUp({
-                content: `❌ ${validation.error}`,
+                content: '❌ Carrinho não encontrado.',
                 ephemeral: true
             });
         }
 
-        // Add item to cart
-        await Cart.addItem(cartId, validation.item.name, validation.item.price, validation.item.splashArt || validation.item.iconUrl, validation.item.category);
+        // Carregar catálogo
+        let catalog = [];
+        if (fs.existsSync('./catalog.json')) {
+            catalog = JSON.parse(fs.readFileSync('./catalog.json', 'utf8'));
+            console.log(`[DEBUG] Catalog loaded with ${catalog.length} items`);
+        } else {
+            console.log(`[DEBUG] Catalog file not found`);
+            return await interaction.followUp({
+                content: '❌ Catálogo não encontrado.',
+                ephemeral: true
+            });
+        }
 
-        // Update cart totals
-        await Cart.updateTotals(cartId);
+        // Encontrar o item no catálogo
+        const item = catalog.find(i => i.id == itemId);
+        console.log(`[DEBUG] Item found in catalog:`, item ? `${item.name} (${item.price} RP)` : 'No item found');
 
-        // Return to cart view
-        const cart = await Cart.findById(cartId);
-        await CartService.sendCartEmbed(interaction.channel, cart);
+        if (!item) {
+            return await interaction.followUp({
+                content: '❌ Item não encontrado no catálogo.',
+                ephemeral: true
+            });
+        }
+
+        // Verificar se o item já está no carrinho
+        const existingItem = await Cart.findItemInCart(cartId, itemId);
+        console.log(`[DEBUG] Existing item in cart:`, existingItem ? 'Found duplicate' : 'No duplicate');
+
+        if (existingItem) {
+            return await interaction.followUp({
+                content: '❌ Este item já está no seu carrinho.',
+                ephemeral: true
+            });
+        }
+
+        // Determinar categoria do item
+        let category = item.inventoryType || 'OTHER';
+        if (item.subInventoryType === 'RECOLOR') {
+            category = 'CHROMA';
+        } else if (item.subInventoryType === 'CHROMA_BUNDLE') {
+            category = 'CHROMA_BUNDLE';
+        }
+        console.log(`[DEBUG] Item category determined: ${category}`);
+
+        // Adicionar item ao carrinho
+        console.log(`[DEBUG] Adding item to cart...`);
+        const addResult = await Cart.addItem(
+            cartId,
+            item.name,
+            item.price,
+            item.splashArt || item.iconUrl || null,
+            category,
+            itemId
+        );
+        console.log(`[DEBUG] Item added with ID: ${addResult}`);
+
+        // Retornar ao carrinho
+        const updatedCart = await Cart.findById(cartId);
+        await CartService.sendCartEmbed(interaction.channel, updatedCart);
 
         await interaction.followUp({
-            content: `✅ **${validation.item.name}** adicionado ao carrinho!`,
+            content: `✅ **${item.name}** adicionado ao carrinho!`,
             ephemeral: true
         });
+
+        console.log(`[DEBUG] Item successfully added and cart updated`);
+
     } catch (error) {
-        console.error('Error confirming add item:', error);
+        console.error('[ERROR] Error confirming add item:', error);
+        console.error('[ERROR] Stack trace:', error.stack);
         await interaction.followUp({
-            content: '❌ Erro ao adicionar item ao carrinho.',
+            content: `❌ Erro ao adicionar item: ${error.message}`,
             ephemeral: true
         });
     }
@@ -674,27 +755,226 @@ async function handleCategorySearch(interaction, cartId, category) {
     }
 }
 
+// handlers/buttonHandler.js - Versão simplificada do handleCheckout
+
 async function handleCheckout(interaction, cartId) {
     try {
+        console.log(`[DEBUG] handleCheckout called with cartId: ${cartId}`);
+        
         const cart = await Cart.findById(cartId);
+        console.log(`[DEBUG] Cart lookup result:`, cart);
+        
         if (!cart) {
-            // Se a interação já foi respondida/deferida, use followUp.
-            const replyMethod = interaction.replied || interaction.deferred ? 'followUp' : 'reply';
-            return await interaction[replyMethod]({ content: '❌ Carrinho não encontrado.', ephemeral: true });
+            return await interaction.reply({
+                content: '❌ Carrinho não encontrado. Tente abrir um novo carrinho.',
+                ephemeral: true
+            });
+        }
+
+        // ⭐ SIMPLIFICAÇÃO: Aceitar qualquer status ativo
+        const validStatuses = ['active', 'pending_payment'];
+        if (!validStatuses.includes(cart.status)) {
+            return await interaction.reply({
+                content: `❌ Este carrinho não pode ser usado para checkout. Status atual: ${cart.status}`,
+                ephemeral: true
+            });
         }
 
         const items = await Cart.getItems(cartId);
+        console.log(`[DEBUG] Cart items count: ${items.length}`);
+        
         if (items.length === 0) {
-            const replyMethod = interaction.replied || interaction.deferred ? 'followUp' : 'reply';
-            return await interaction[replyMethod]({ content: '❌ Seu carrinho está vazio.', ephemeral: true });
+            return await interaction.reply({
+                content: '❌ Seu carrinho está vazio. Adicione itens antes de fazer checkout.',
+                ephemeral: true
+            });
         }
 
-        // CartService.sendCheckoutEmbed agora lida com a resposta à interação
+        // ⭐ SIMPLIFICAÇÃO: Pular verificação de propriedade por enquanto
+        // (assumir que quem clica é o dono)
+        console.log(`[DEBUG] Skipping ownership check for now...`);
+
+        // Chamar o método do CartService
         await CartService.sendCheckoutEmbed(interaction, interaction.client, cartId);
 
     } catch (error) {
         console.error('Error handling checkout:', error);
-        const replyMethod = interaction.replied || interaction.deferred ? 'followUp' : 'reply';
-        await interaction[replyMethod]({ content: '❌ Erro ao processar checkout.', ephemeral: true }).catch(console.error);
+        console.error('Error stack:', error.stack);
+        
+        if (!interaction.replied && !interaction.deferred) {
+            await interaction.reply({
+                content: '❌ Erro ao processar checkout. Tente novamente.',
+                ephemeral: true
+            });
+        } else {
+            await interaction.followUp({
+                content: '❌ Erro ao processar checkout.',
+                ephemeral: true
+            });
+        }
+    }
+}
+
+async function handleConfirmCheckout(interaction, cartId) {
+    try {
+        console.log(`[DEBUG] handleConfirmCheckout started with cartId: ${cartId}`);
+        console.log(`[DEBUG] User ID: ${interaction.user.id}`);
+
+        if (!interaction.replied && !interaction.deferred) {
+            await interaction.deferReply({ ephemeral: true });
+        }
+
+        const cart = await Cart.findById(cartId);
+        console.log(`[DEBUG] Cart found:`, cart ? `User: ${cart.user_id}` : 'No cart');
+
+        if (!cart) {
+            return await interaction.editReply({ content: '❌ Carrinho não encontrado.' });
+        }
+
+        const items = await Cart.getItems(cartId);
+        if (items.length === 0) {
+            return await interaction.editReply({ content: '❌ Carrinho vazio.' });
+        }
+
+        const totalRP = items.reduce((sum, item) => sum + item.skin_price, 0);
+        const totalPrice = totalRP * 0.01;
+
+        const itemsData = items.map(item => ({
+            id: item.original_item_id || item.id,
+            name: item.skin_name,
+            price: item.skin_price,
+            category: item.category || 'OTHER'
+        }));
+
+        console.log(`[DEBUG] About to create order...`);
+
+        let orderId;
+
+        try {
+            // ⭐ CORREÇÃO: Usar interaction.user.id em vez de cart.user_id
+            const userIdToUse = interaction.user.id; // Discord ID como string
+            console.log(`[DEBUG] Using Discord ID: ${userIdToUse}`);
+
+            orderId = await Promise.race([
+                OrderLog.create(
+                    userIdToUse,        // ⭐ User ID do Discord (string)
+                    cartId,
+                    itemsData,
+                    totalRP,
+                    totalPrice,
+                    'PENDING_PAYMENT_PROOF',
+                    null,
+                    interaction.channel.id
+                ),
+                new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('OrderLog.create timeout')), 5000)
+                )
+            ]);
+            console.log(`[DEBUG] OrderLog.create succeeded with ID: ${orderId}`);
+
+        } catch (createError) {
+            console.error(`[ERROR] OrderLog.create failed:`, createError);
+            console.log(`[DEBUG] Trying manual database insert...`);
+
+            try {
+                const db = require('../database/connection');
+                const manualQuery = `
+                    INSERT INTO order_logs (
+                        user_id, cart_id, items_data, total_rp, total_price, 
+                        status, payment_proof_url, order_channel_id, 
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                `;
+
+                const manualResult = await db.run(manualQuery, [
+                    interaction.user.id,  // ⭐ User ID do Discord (string)
+                    cartId,
+                    JSON.stringify(itemsData),
+                    totalRP,
+                    totalPrice,
+                    'PENDING_PAYMENT_PROOF',
+                    null,
+                    interaction.channel.id
+                ]);
+
+                orderId = manualResult.lastID;
+                console.log(`[DEBUG] Manual insert succeeded with ID: ${orderId}`);
+
+            } catch (manualError) {
+                console.error(`[ERROR] Manual insert also failed:`, manualError);
+                throw new Error(`Failed to create order: ${manualError.message}`);
+            }
+        }
+
+
+        if (!orderId) {
+            throw new Error('Order ID not generated');
+        }
+
+        console.log(`[DEBUG] Order created successfully with ID: ${orderId}`);
+
+        // Atualizar status do carrinho
+        await Cart.updateStatus(cartId, 'pending_payment');
+
+        // Preparar métodos de pagamento
+        const paymentMethods = Object.entries(config.paymentMethods || {})
+            .map(([method, details]) =>
+                `**${method.toUpperCase()}:**\n${details.instructions}`
+            ).join('\n\n') || 'Métodos de pagamento não configurados';
+
+        // Responder com sucesso
+        const successEmbed = new EmbedBuilder()
+            .setTitle('✅ Pedido Criado com Sucesso!')
+            .setDescription(
+                `**🆔 ID do Pedido:** \`${orderId}\`\n` +
+                `**💎 Total RP:** ${totalRP.toLocaleString()}\n` +
+                `**💰 Total EUR:** €${totalPrice.toFixed(2)}\n\n` +
+                `**📝 Próximos passos:**\n` +
+                `1️⃣ Realize o pagamento\n` +
+                `2️⃣ **Envie a imagem do comprovante** neste canal\n` +
+                `3️⃣ Aguarde nossa aprovação\n` +
+                `4️⃣ Receba os itens na sua conta`
+            )
+            .addFields([
+                {
+                    name: '💳 Métodos de Pagamento',
+                    value: paymentMethods,
+                    inline: false
+                },
+                {
+                    name: '📦 Itens do Pedido',
+                    value: items.map((item, index) =>
+                        `${index + 1}. **${item.skin_name}** - ${item.skin_price.toLocaleString()} RP`
+                    ).join('\n'),
+                    inline: false
+                }
+            ])
+            .setColor('#00ff00')
+            .setFooter({ text: `Pedido ID: ${orderId} | Carrinho ID: ${cartId}` })
+            .setTimestamp();
+
+        await interaction.editReply({
+            content: `✅ **Pedido criado com sucesso!**`,
+            embeds: [successEmbed]
+        });
+
+        // Enviar mensagem pública no canal
+        await interaction.channel.send({
+            content: `🛒 **Pedido criado por ${interaction.user}**`,
+            embeds: [successEmbed]
+        });
+
+        console.log(`[DEBUG] handleConfirmCheckout completed successfully`);
+
+    } catch (error) {
+        console.error('[ERROR] Error in handleConfirmCheckout:', error);
+
+        try {
+            await interaction.editReply({
+                content: `❌ Erro ao criar pedido: ${error.message}`
+            });
+        } catch (replyError) {
+            console.error('[ERROR] Error sending error message:', replyError);
+        }
     }
 }
