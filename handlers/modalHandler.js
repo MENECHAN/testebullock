@@ -54,21 +54,34 @@ module.exports = {
 
 async function handleSearchCategoryModal(interaction) {
     try {
+        console.log(`[DEBUG] handleSearchCategoryModal called`);
         await interaction.deferUpdate();
 
         // Debug: vamos ver o customId completo
-        console.log('Full customId:', interaction.customId);
+        console.log(`[DEBUG] Full customId: ${interaction.customId}`);
         
         const parts = interaction.customId.split('_');
-        console.log('Parts:', parts); // DEBUG
+        console.log(`[DEBUG] CustomId parts:`, parts);
+        
+        // customId: search_category_modal_CARTID_CATEGORY
+        // parts: ['search', 'category', 'modal', 'cartId', 'category', ...]
+        
+        if (parts.length < 5) {
+            console.error(`[ERROR] Invalid customId format: ${interaction.customId}`);
+            return await interaction.followUp({
+                content: '❌ Erro no formato da pesquisa.',
+                ephemeral: true
+            });
+        }
         
         const cartId = parts[3];
         // CORREÇÃO: Juntar todas as partes restantes para formar a categoria
         const category = parts.slice(4).join('_');
         
-        console.log('Parsed - cartId:', cartId, 'category:', category); // DEBUG
+        console.log(`[DEBUG] Parsed - cartId: ${cartId}, category: ${category}`);
         
         const searchQuery = interaction.fields.getTextInputValue('search_query');
+        console.log(`[DEBUG] Search query: "${searchQuery}"`);
 
         if (!searchQuery || searchQuery.trim().length < 2) {
             return await interaction.followUp({
@@ -77,13 +90,22 @@ async function handleSearchCategoryModal(interaction) {
             });
         }
 
+        console.log(`[DEBUG] About to call handleSearchInCategory`);
         await CartService.handleSearchInCategory(interaction.channel, cartId, category, searchQuery.trim());
+        console.log(`[DEBUG] handleSearchInCategory completed`);
+        
     } catch (error) {
-        console.error('Error handling search category modal:', error);
-        await interaction.followUp({
-            content: '❌ Erro ao processar busca.',
-            ephemeral: true
-        });
+        console.error('[ERROR] Error handling search category modal:', error);
+        console.error('[ERROR] Stack trace:', error.stack);
+        
+        try {
+            await interaction.followUp({
+                content: '❌ Erro ao processar busca.',
+                ephemeral: true
+            });
+        } catch (followUpError) {
+            console.error('[ERROR] Error sending followUp:', followUpError);
+        }
     }
 }
 

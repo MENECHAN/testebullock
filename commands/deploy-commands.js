@@ -6,7 +6,7 @@ const commands = [
         .setName('send-panel')
         .setDescription('Envia o painel principal do shop')
         .setDefaultMemberPermissions(0),
-    
+
     new SlashCommandBuilder()
         .setName('account')
         .setDescription('Gerencia contas do sistema')
@@ -15,17 +15,17 @@ const commands = [
             subcommand
                 .setName('add')
                 .setDescription('Adiciona uma nova conta')
-                .addStringOption(option => 
+                .addStringOption(option =>
                     option.setName('nickname')
                         .setDescription('Nickname da conta')
                         .setRequired(true)
                 )
-                .addIntegerOption(option => 
+                .addIntegerOption(option =>
                     option.setName('rp')
                         .setDescription('Quantidade de RP')
                         .setRequired(true)
                 )
-                .addIntegerOption(option => 
+                .addIntegerOption(option =>
                     option.setName('friends')
                         .setDescription('Quantidade de amigos atual')
                         .setRequired(true)
@@ -35,7 +35,7 @@ const commands = [
             subcommand
                 .setName('remove')
                 .setDescription('Remove uma conta')
-                .addIntegerOption(option => 
+                .addIntegerOption(option =>
                     option.setName('id')
                         .setDescription('ID da conta')
                         .setRequired(true)
@@ -45,22 +45,22 @@ const commands = [
             subcommand
                 .setName('edit')
                 .setDescription('Edita uma conta')
-                .addIntegerOption(option => 
+                .addIntegerOption(option =>
                     option.setName('id')
                         .setDescription('ID da conta')
                         .setRequired(true)
                 )
-                .addStringOption(option => 
+                .addStringOption(option =>
                     option.setName('nickname')
                         .setDescription('Novo nickname')
                         .setRequired(false)
                 )
-                .addIntegerOption(option => 
+                .addIntegerOption(option =>
                     option.setName('rp')
                         .setDescription('Nova quantidade de RP')
                         .setRequired(false)
                 )
-                .addIntegerOption(option => 
+                .addIntegerOption(option =>
                     option.setName('friends')
                         .setDescription('Nova quantidade de amigos')
                         .setRequired(false)
@@ -94,6 +94,58 @@ const commands = [
                     option.setName('days')
                         .setDescription('Remover backups mais antigos que X dias (padrão: 7)')
                         .setRequired(false)
+                )
+        ),
+
+    new SlashCommandBuilder()
+        .setName('friendship-admin')
+        .setDescription('Comandos administrativos para amizades (TESTES)')
+        .setDefaultMemberPermissions(0)
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('set-date')
+                .setDescription('Alterar data de uma amizade específica')
+                .addIntegerOption(option =>
+                    option.setName('friendship_id')
+                        .setDescription('ID da amizade')
+                        .setRequired(true)
+                )
+                .addIntegerOption(option =>
+                    option.setName('days_ago')
+                        .setDescription('Quantos dias atrás (ex: 7 = 7 dias atrás)')
+                        .setRequired(true)
+                        .setMinValue(0)
+                        .setMaxValue(365)
+                )
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('list-user')
+                .setDescription('Listar amizades de um usuário')
+                .addUserOption(option =>
+                    option.setName('usuario')
+                        .setDescription('Usuário para verificar')
+                        .setRequired(true)
+                )
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('reset-notifications')
+                .setDescription('Resetar notificações de um usuário específico')
+                .addUserOption(option =>
+                    option.setName('usuario')
+                        .setDescription('Usuário para resetar')
+                        .setRequired(true)
+                )
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('force-notification')
+                .setDescription('Forçar notificação de uma amizade')
+                .addIntegerOption(option =>
+                    option.setName('friendship_id')
+                        .setDescription('ID da amizade')
+                        .setRequired(true)
                 )
         ),
 
@@ -187,6 +239,37 @@ const commands = [
                         .setDescription('Número de clientes a mostrar (padrão: 10)')
                         .setRequired(false)
                 )
+        ),
+
+    // ⭐ COMANDO DE NOTIFICAÇÕES DE AMIZADE (NOVO)
+    new SlashCommandBuilder()
+        .setName('friendship-notifications')
+        .setDescription('Gerencia notificações de amizade')
+        .setDefaultMemberPermissions(0)
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('stats')
+                .setDescription('Mostra estatísticas do serviço de notificação')
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('check')
+                .setDescription('Verifica amizades elegíveis agora')
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('test')
+                .setDescription('Testa notificação para uma amizade específica')
+                .addIntegerOption(option =>
+                    option.setName('friendship_id')
+                        .setDescription('ID da amizade para testar')
+                        .setRequired(true)
+                )
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('reset')
+                .setDescription('Reseta todas as notificações (CUIDADO!)')
         )
 ];
 

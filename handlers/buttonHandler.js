@@ -85,35 +85,37 @@ module.exports = {
 
         // Handlers do carrinho com dropdown
         switch (action) {
-            case 'close':
-                if (params[0] === 'account' && params[1] === 'ticket') {
-                    await handleCloseAccountTicket(interaction);
-                }
-                break;
             case 'open':
                 if (params[0] === 'cart') {
                     await handleOpenCart(interaction);
                 }
                 break;
+
             case 'add':
                 if (params[0] === 'account') {
                     await handleAddAccount(interaction);
                 } else if (params[0] === 'friend') {
                     await handleAddFriend(interaction, params[1]);
                 } else if (params[0] === 'item') {
+                    console.log(`[DEBUG] Calling handleAddItem with cartId: ${params[1]}`);
                     await handleAddItem(interaction, params[1]);
                 }
                 break;
+
             case 'remove':
                 if (params[0] === 'item') {
                     await handleRemoveItem(interaction, params[1]);
                 }
                 break;
+
             case 'close':
-                if (params[0] === 'cart') {
+                if (params[0] === 'account' && params[1] === 'ticket') {
+                    await handleCloseAccountTicket(interaction);
+                } else if (params[0] === 'cart') {
                     await handleCloseCart(interaction, params[1]);
                 }
                 break;
+
             case 'confirm':
                 console.log(`[DEBUG] Confirm action with params:`, params);
                 if (params[0] === 'close') {
@@ -131,6 +133,7 @@ module.exports = {
                     await handleCancelClose(interaction);
                 }
                 break;
+
             case 'back':
                 if (params[0] === 'cart') {
                     await handleBackToCart(interaction, params[1]);
@@ -138,47 +141,45 @@ module.exports = {
                     await handleBackToItems(interaction, params[1], params[2], params[3]);
                 }
                 break;
-            // NOVO CASE PARA CHECKOUT
+
             case 'checkout':
-                // customId: checkout_CARTID
                 const checkoutCartId = params[0];
                 await handleCheckout(interaction, checkoutCartId);
                 break;
 
-            // NOVO CASE PARA COMPROVANTE ENVIADO
             case 'payment':
                 if (params[0] === 'proof' && params[1] === 'sent') {
-                    // customId: payment_proof_sent_CARTID_ORDERID
-                    const proofCartId = params[2]; // Ou o orderId se você mudou o customId para ser apenas _orderId
-                    const proofOrderId = params[3]; // Ajuste aqui. Se o customId é payment_proof_sent_ORDERID, então proofOrderId = params[2]
-                    // Na implementação de sendCheckoutEmbed, o customId é payment_proof_sent_${cartId}_${orderId}
-                    // Então params[2] é cartId, params[3] é orderId
-                    await OrderService.handleClientSentProof(interaction, proofOrderId); // Passar o orderId
+                    const proofOrderId = params[3];
+                    await OrderService.handleClientSentProof(interaction, proofOrderId);
                 }
                 break;
+
             case 'items':
                 if (params[0] === 'page') {
                     await handleItemsPage(interaction, params[1], params[2], params[3]);
                 }
                 break;
+
             case 'searchpage':
                 await handleSearchPageSimple(interaction, params[1], params[2], params[3]);
                 break;
+
             case 'search':
                 if (params[0] === 'more') {
                     await handleSearchMore(interaction, params[1]);
                 } else if (params[0] === 'category') {
-                    // CORREÇÃO: Juntar todos os parâmetros depois do cartId
+                    // customId: search_category_CARTID_CATEGORY
                     const cartId = params[1];
                     const category = params.slice(2).join('_');
+                    console.log(`[DEBUG] Search category button - cartId: ${cartId}, category: ${category}`);
                     await handleCategorySearch(interaction, cartId, category);
                 } else if (params[0] === 'result' && params[1] === 'page') {
-                    // CORREÇÃO: search_result_page_cartId_category_page_encodedQuery
+                    // customId: search_result_page_cartId_category_page_encodedQuery
                     const cartId = params[2];
                     const categoryParts = [];
                     let pageIndex = -1;
 
-                    // Encontrar onde está o número da página
+                    // Find where the page number is
                     for (let i = 3; i < params.length; i++) {
                         if (!isNaN(parseInt(params[i]))) {
                             pageIndex = i;
@@ -196,6 +197,9 @@ module.exports = {
                 }
                 break;
 
+            default:
+                console.log(`[DEBUG] No handler found for action: ${action} with params:`, params);
+                break;
         }
     }
 };
@@ -218,7 +222,189 @@ async function handleSearchPageSimple(interaction, cartId, page, encodedData) {
     }
 }
 
+async function handleConfirmCheckoutWithAccount(interaction, cartId, accountId) {
+    try {
+        console.log(`[DEBUG] handleConfirmCheckoutWithAccount started with cartId: ${cartId}, accountId: ${accountId}`);
 
+        if (!interaction.replied && !interaction.deferred) {
+            await interaction.deferReply({ ephemeral: true });
+        }
+
+        // Verificações básicas
+        const Cart = require('../models/Cart');
+        const Account = require('../models/Account');
+        const User = require('../models/User');
+        const Friendship = require('../models/Friendship');
+
+        const cart = await Cart.findById(cartId);
+        const account = await Account.findById(accountId);
+        const user = await User.findOrCreate(interaction.user.id, interaction.user.username);
+        const friendship = await Friendship.findByUserAndAccount(user.id, accountId);
+
+        if (!cart || !account || !friendship) {
+            return await interaction.editReply({
+                content: '❌ Erro ao encontrar informações necessárias.'
+            });
+        }
+
+        // Verificar elegibilidade novamente
+        const FriendshipService = require('../services/friendshipService');
+        const eligibility = await FriendshipService.canSendGifts(user.id, accountId);
+
+        if (!eligibility.canSend) {
+            return await interaction.editReply({
+                content: `❌ Esta conta não é mais elegível para presentes.\n${eligibility.reason}`
+            });
+        }
+
+        const items = await Cart.getItems(cartId);
+        if (items.length === 0) {
+            return await interaction.editReply({ content: '❌ Carrinho vazio.' });
+        }
+
+        const totalRP = items.reduce((sum, item) => sum + item.skin_price, 0);
+        const totalPrice = totalRP * 0.01;
+
+        const itemsData = items.map(item => ({
+            id: item.original_item_id || item.id,
+            name: item.skin_name,
+            price: item.skin_price,
+            category: item.category || 'OTHER'
+        }));
+
+        console.log(`[DEBUG] About to create order with account selection...`);
+
+        let orderId;
+
+        try {
+            // ⭐ CRIAR PEDIDO COM CONTA SELECIONADA
+            const OrderLog = require('../models/OrderLog');
+            const userIdToUse = interaction.user.id;
+
+            // Vamos usar a inserção manual diretamente já que é mais confiável
+            const db = require('../database/connection');
+            const manualQuery = `
+                INSERT INTO order_logs (
+                    user_id, cart_id, items_data, total_rp, total_price, 
+                    status, payment_proof_url, order_channel_id, selected_account_id,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `;
+
+            const manualResult = await db.run(manualQuery, [
+                interaction.user.id,
+                cartId,
+                JSON.stringify(itemsData),
+                totalRP,
+                totalPrice,
+                'PENDING_PAYMENT_PROOF',
+                null,
+                interaction.channel.id,
+                accountId // ⭐ INCLUIR CONTA SELECIONADA
+            ]);
+
+            orderId = manualResult.lastID;
+            console.log(`[DEBUG] Order created successfully with ID: ${orderId} and selected account: ${accountId}`);
+
+        } catch (createError) {
+            console.error(`[ERROR] Order creation failed:`, createError);
+            throw new Error(`Failed to create order: ${createError.message}`);
+        }
+
+        if (!orderId) {
+            throw new Error('Order ID not generated');
+        }
+
+        // Atualizar status do carrinho
+        await Cart.updateStatus(cartId, 'pending_payment');
+
+        // Preparar métodos de pagamento do config
+        const config = require('../config.json');
+        let paymentMethods = '';
+
+        if (config.paymentMethods?.paypal?.instructions) {
+            paymentMethods += `**💳 PayPal:**\n${config.paymentMethods.paypal.instructions}\n\n`;
+        }
+
+        if (config.paymentMethods?.crypto?.instructions) {
+            paymentMethods += `**🔗 Crypto:**\n${config.paymentMethods.crypto.instructions}\n\n`;
+        }
+
+        if (config.paymentMethods?.bank?.instructions) {
+            paymentMethods += `**🏦 Bank Transfer:**\n${config.paymentMethods.bank.instructions}\n\n`;
+        }
+
+        if (!paymentMethods) {
+            paymentMethods = 'Entre em contato com o suporte para informações de pagamento.';
+        }
+
+        // Responder com sucesso
+        const successEmbed = new EmbedBuilder()
+            .setTitle('✅ Pedido Criado com Sucesso!')
+            .setDescription(
+                `**🆔 ID do Pedido:** \`${orderId}\`\n` +
+                `**🎮 Conta de destino:** ${account.nickname}\n` +
+                `**👤 Seu nick:** ${friendship.lol_nickname}#${friendship.lol_tag}\n` +
+                `**💎 Total RP:** ${totalRP.toLocaleString()}\n` +
+                `**💰 Total EUR:** €${totalPrice.toFixed(2)}\n\n` +
+                `**📝 Próximos passos:**\n` +
+                `1️⃣ Realize o pagamento usando um dos métodos abaixo\n` +
+                `2️⃣ **Envie a imagem do comprovante** neste canal\n` +
+                `3️⃣ Aguarde nossa aprovação\n` +
+                `4️⃣ Receba os itens na conta **${account.nickname}**`
+            )
+            .addFields([
+                {
+                    name: '💳 Métodos de Pagamento',
+                    value: paymentMethods.length > 1024 ? paymentMethods.substring(0, 1021) + '...' : paymentMethods,
+                    inline: false
+                },
+                {
+                    name: '📦 Itens do Pedido',
+                    value: items.map((item, index) =>
+                        `${index + 1}. **${item.skin_name}** - ${item.skin_price.toLocaleString()} RP`
+                    ).join('\n'),
+                    inline: false
+                },
+                {
+                    name: '🎮 Informações da Conta',
+                    value:
+                        `**Conta:** ${account.nickname}\n` +
+                        `**Seu nick LoL:** ${friendship.lol_nickname}#${friendship.lol_tag}\n` +
+                        `**RP disponível:** ${account.rp_amount.toLocaleString()}\n` +
+                        `**Amigos há:** ${eligibility.daysSinceFriendship} dia(s)`,
+                    inline: false
+                }
+            ])
+            .setColor('#00ff00')
+            .setFooter({ text: `Pedido ID: ${orderId} | Conta: ${account.nickname}` })
+            .setTimestamp();
+
+        await interaction.editReply({
+            content: `✅ **Pedido criado com sucesso!**`,
+            embeds: [successEmbed]
+        });
+
+        // Enviar mensagem pública no canal
+        await interaction.channel.send({
+            content: `🛒 **Pedido criado por ${interaction.user}**`,
+            embeds: [successEmbed]
+        });
+
+        console.log(`[DEBUG] handleConfirmCheckoutWithAccount completed successfully`);
+
+    } catch (error) {
+        console.error('[ERROR] Error in handleConfirmCheckoutWithAccount:', error);
+
+        try {
+            await interaction.editReply({
+                content: `❌ Erro ao criar pedido: ${error.message}`
+            });
+        } catch (replyError) {
+            console.error('[ERROR] Error sending error message:', replyError);
+        }
+    }
+}
 
 // Em handlers/buttonHandler.js, adicione esta função:
 async function handleSearchResultPage(interaction, cartId, category, page, encodedQuery) {
@@ -496,24 +682,39 @@ async function handleAddFriend(interaction, accountId) {
 
 async function handleAddItem(interaction, cartId) {
     try {
+        console.log(`[DEBUG] handleAddItem called with cartId: ${cartId}`);
         await interaction.deferUpdate();
 
         const cart = await Cart.findById(cartId);
+        console.log(`[DEBUG] Cart found in handleAddItem:`, cart ? `ID: ${cart.id}, Status: ${cart.status}` : 'Not found');
+
         if (!cart) {
+            console.log(`[DEBUG] Cart not found, sending error`);
             return await interaction.followUp({
                 content: '❌ Carrinho não encontrado.',
                 ephemeral: true
             });
         }
 
+        console.log(`[DEBUG] About to call sendCategorySelectEmbed`);
+
         // Show category selection
         await CartService.sendCategorySelectEmbed(interaction.channel, cartId);
+
+        console.log(`[DEBUG] sendCategorySelectEmbed completed successfully`);
+
     } catch (error) {
-        console.error('Error handling add item:', error);
-        await interaction.followUp({
-            content: '❌ Erro ao processar solicitação.',
-            ephemeral: true
-        });
+        console.error('[ERROR] Error handling add item:', error);
+        console.error('[ERROR] Stack trace:', error.stack);
+
+        try {
+            await interaction.followUp({
+                content: '❌ Erro ao processar solicitação.',
+                ephemeral: true
+            });
+        } catch (followUpError) {
+            console.error('[ERROR] Error sending followUp:', followUpError);
+        }
     }
 }
 
@@ -768,7 +969,7 @@ async function handleSearchMore(interaction, cartId) {
 
 async function handleCategorySearch(interaction, cartId, category) {
     try {
-        console.log('handleCategorySearch - cartId:', cartId, 'category:', category); // DEBUG
+        console.log(`[DEBUG] handleCategorySearch - cartId: ${cartId}, category: ${category}`);
 
         const modal = new ModalBuilder()
             .setCustomId(`search_category_modal_${cartId}_${category}`)
@@ -785,13 +986,22 @@ async function handleCategorySearch(interaction, cartId, category) {
         const firstActionRow = new ActionRowBuilder().addComponents(searchInput);
         modal.addComponents(firstActionRow);
 
+        console.log(`[DEBUG] About to show modal for category search`);
         await interaction.showModal(modal);
+        console.log(`[DEBUG] Modal shown successfully`);
+
     } catch (error) {
-        console.error('Error handling category search:', error);
-        await interaction.reply({
-            content: '❌ Erro ao processar busca.',
-            ephemeral: true
-        });
+        console.error('[ERROR] Error handling category search:', error);
+        console.error('[ERROR] Stack trace:', error.stack);
+
+        try {
+            await interaction.reply({
+                content: '❌ Erro ao processar busca.',
+                ephemeral: true
+            });
+        } catch (replyError) {
+            console.error('[ERROR] Error sending reply:', replyError);
+        }
     }
 }
 

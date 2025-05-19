@@ -144,34 +144,34 @@ class Friendship {
         }
     }
 
-    static async getStatistics() {
-        try {
-            const query = `
-                SELECT 
-                    COUNT(*) as total_friendships,
-                    COUNT(DISTINCT user_id) as users_with_friends,
-                    COUNT(DISTINCT account_id) as accounts_with_friends,
-                    AVG(friends_per_user.friend_count) as avg_friends_per_user
-                FROM friendships f
-                JOIN (
-                    SELECT user_id, COUNT(*) as friend_count
-                    FROM friendships
-                    GROUP BY user_id
-                ) friends_per_user ON f.user_id = friends_per_user.user_id
-            `;
-            const result = await db.get(query);
-            
-            return {
-                totalFriendships: result.total_friendships,
-                usersWithFriends: result.users_with_friends || 0,
-                accountsWithFriends: result.accounts_with_friends || 0,
-                averageFriendsPerUser: result.avg_friends_per_user || 0
-            };
-        } catch (error) {
-            console.error('Error getting friendship statistics:', error);
-            throw error;
-        }
+static async getStatistics() {
+    try {
+        const query = `
+            SELECT 
+                COUNT(*) as total_friendships,
+                COUNT(DISTINCT f.user_id) as users_with_friends,
+                COUNT(DISTINCT f.account_id) as accounts_with_friends,
+                AVG(friends_per_user.friend_count) as avg_friends_per_user
+            FROM friendships f
+            JOIN (
+                SELECT user_id, COUNT(*) as friend_count
+                FROM friendships
+                GROUP BY user_id
+            ) friends_per_user ON f.user_id = friends_per_user.user_id
+        `;
+        const result = await db.get(query);
+        
+        return {
+            totalFriendships: result.total_friendships,
+            usersWithFriends: result.users_with_friends || 0,
+            accountsWithFriends: result.accounts_with_friends || 0,
+            averageFriendsPerUser: result.avg_friends_per_user || 0
+        };
+    } catch (error) {
+        console.error('Error getting friendship statistics:', error);
+        throw error;
     }
+}
 
     static async getRecentFriendships(limit = 10) {
         try {

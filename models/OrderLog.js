@@ -27,10 +27,10 @@ class OrderLog {
         }
     }
 
-    static async create(userId, cartId, itemsData, totalRp, totalPrice, status = 'PENDING_CHECKOUT', paymentProofUrl = null, orderChannelId = null) {
+    static async create(userId, cartId, itemsData, totalRp, totalPrice, status = 'PENDING_CHECKOUT', paymentProofUrl = null, orderChannelId = null, selectedAccountId = null) {
         try {
             console.log(`[DEBUG OrderLog.create] Starting creation with parameters:`, {
-                userId, cartId, itemsCount: itemsData?.length, totalRp, totalPrice, status
+                userId, cartId, itemsCount: itemsData?.length, totalRp, totalPrice, status, selectedAccountId
             });
 
             // Usar o método correto do database connection
@@ -39,9 +39,9 @@ class OrderLog {
             const query = `
             INSERT INTO order_logs (
                 user_id, cart_id, items_data, total_rp, total_price, 
-                status, payment_proof_url, order_channel_id, 
+                status, payment_proof_url, order_channel_id, selected_account_id,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         `;
 
             const params = [
@@ -52,10 +52,11 @@ class OrderLog {
                 totalPrice,
                 status,
                 paymentProofUrl,
-                orderChannelId
+                orderChannelId,
+                selectedAccountId // ⭐ NOVO PARÂMETRO
             ];
 
-            console.log(`[DEBUG OrderLog.create] Executing insert...`);
+            console.log(`[DEBUG OrderLog.create] Executing insert with selectedAccountId: ${selectedAccountId}...`);
 
             // Usar o método run do database connection
             const result = await db.run(query, params);
@@ -76,8 +77,25 @@ class OrderLog {
 
     static async findById(id) {
         try {
-            const query = 'SELECT * FROM order_logs WHERE id = ?';
-            return await db.get(query, [id]);
+            const query = `
+            SELECT ol.*, a.nickname as selected_account_nickname, a.rp_amount as selected_account_rp
+            FROM order_logs ol
+            LEFT JOIN accounts a ON ol.selected_account_id = a.id
+            WHERE ol.id = ?
+        `;
+            const order = await db.get(query, [id]);
+
+            // Parse items_data se existir
+            if (order && order.items_data) {
+                try {
+                    order.items_data = JSON.parse(order.items_data);
+                } catch (parseError) {
+                    console.error(`Error parsing items_data for order ${id}:`, parseError);
+                    order.items_data = [];
+                }
+            }
+
+            return order;
         } catch (error) {
             console.error('Error finding order log by ID:', error);
             throw error;
@@ -163,7 +181,13 @@ class OrderLog {
 
             // Criar placeholders para a query IN
             const placeholders = statusArray.map(() => '?').join(',');
-            const query = `SELECT * FROM order_logs WHERE cart_id = ? AND status IN (${placeholders}) ORDER BY created_at DESC LIMIT 1`;
+            const query = `
+            SELECT ol.*, a.nickname as selected_account_nickname, a.rp_amount as selected_account_rp
+            FROM order_logs ol
+            LEFT JOIN accounts a ON ol.selected_account_id = a.id
+            WHERE ol.cart_id = ? AND ol.status IN (${placeholders}) 
+            ORDER BY ol.created_at DESC LIMIT 1
+        `;
 
             const row = await db.get(query, [cartId, ...statusArray]);
 
@@ -232,6 +256,17 @@ class OrderLog {
             return row;
         } catch (error) {
             console.error('Erro ao buscar pedido ativo por channel ID e status:', error);
+            throw error;
+        }
+    }
+
+    static async updateSelectedAccount(orderId, selectedAccountId) {
+        try {
+            const query = 'UPDATE order_logs SET selected_account_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?';
+            const result = await db.run(query, [selectedAccountId, orderId]);
+            return result.changes > 0;
+        } catch (error) {
+            console.error('Error updating selected account:', error);
             throw error;
         }
     }
@@ -328,6 +363,41 @@ class OrderLog {
             return result.changes > 0;
         } catch (error) {
             console.error('Error updating order log action:', error);
+            throw error;
+        }
+    }
+
+    static async findWithAccountInfo(orderId) {
+        try {
+            const query = `
+            SELECT 
+                ol.*,
+                a.nickname as selected_account_nickname,
+                a.rp_amount as selected_account_rp,
+                f.lol_nickname as user_lol_nickname,
+                f.lol_tag as user_lol_tag,
+                u.username as discord_username
+            FROM order_logs ol
+            LEFT JOIN accounts a ON ol.selected_account_id = a.id
+            LEFT JOIN users u ON ol.user_id = u.discord_id
+            LEFT JOIN friendships f ON f.user_id = u.id AND f.account_id = ol.selected_account_id
+            WHERE ol.id = ?
+        `;
+
+            const order = await db.get(query, [orderId]);
+
+            if (order && order.items_data) {
+                try {
+                    order.items_data = JSON.parse(order.items_data);
+                } catch (parseError) {
+                    console.error(`Error parsing items_data for order ${orderId}:`, parseError);
+                    order.items_data = [];
+                }
+            }
+
+            return order;
+        } catch (error) {
+            console.error('Error finding order with account info:', error);
             throw error;
         }
     }

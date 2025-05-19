@@ -14,48 +14,36 @@ class Cart {
         }
     }
 
-    static async findActiveByUserId(userId) {
-        try {
-            console.log(`[DEBUG Cart.findActiveByUserId] Searching for user: ${userId}`);
+static async findActiveByUserId(userId) {
+    try {
+        console.log(`[DEBUG Cart.findActiveByUserId] Searching for user: ${userId}`);
 
-            // Tentar buscar diretamente por user_id (caso seja Discord ID)
-            let query = 'SELECT * FROM carts WHERE user_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1';
-            let cart = await db.get(query, [userId, 'active']);
+        // ⭐ CORREÇÃO: Buscar primeiro diretamente por Discord ID como string
+        let query = 'SELECT * FROM carts WHERE user_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1';
+        let cart = await db.get(query, [userId.toString(), 'active']);
 
-            if (cart) {
-                console.log(`[DEBUG Cart.findActiveByUserId] Found active cart directly: ${cart.id}`);
-                return cart;
-            }
+        if (cart) {
+            console.log(`[DEBUG Cart.findActiveByUserId] Found active cart directly: ${cart.id}`);
+            return cart;
+        }
 
-            // Se não encontrar, verificar se user_id é um número (ID da tabela users)
-            if (!isNaN(userId)) {
-                console.log(`[DEBUG Cart.findActiveByUserId] Trying numeric lookup for ID: ${userId}`);
-                query = 'SELECT * FROM carts WHERE user_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1';
-                cart = await db.get(query, [parseInt(userId), 'active']);
-
-                if (cart) {
-                    console.log(`[DEBUG Cart.findActiveByUserId] Found cart with numeric ID: ${cart.id}`);
-                    return cart;
-                }
-            }
-
-            // Tentar através da tabela users (últim recurso)
-            query = `
+        // ⭐ CORREÇÃO: Buscar através da tabela users se não encontrou diretamente
+        query = `
             SELECT c.* FROM carts c
-            JOIN users u ON CAST(c.user_id AS TEXT) = u.discord_id
+            JOIN users u ON c.user_id = u.discord_id
             WHERE u.discord_id = ? AND c.status = ?
             ORDER BY c.created_at DESC LIMIT 1
         `;
-            cart = await db.get(query, [userId, 'active']);
+        cart = await db.get(query, [userId.toString(), 'active']);
 
-            console.log(`[DEBUG Cart.findActiveByUserId] Final result:`, cart ? `Cart ID ${cart.id}` : 'No active cart found');
-            return cart;
+        console.log(`[DEBUG Cart.findActiveByUserId] Final result:`, cart ? `Cart ID ${cart.id}` : 'No active cart found');
+        return cart;
 
-        } catch (error) {
-            console.error('Error finding active cart:', error);
-            throw error;
-        }
+    } catch (error) {
+        console.error('Error finding active cart:', error);
+        throw error;
     }
+}
 
     static async findByChannelId(channelId) {
         try {

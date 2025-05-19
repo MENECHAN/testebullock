@@ -172,7 +172,6 @@ class OrderService {
         try {
             console.log(`[DEBUG OrderService.approveOrder] Starting approval for order ${orderId}`);
 
-            // ⭐ VERIFICAR SE JÁ FOI DEFERIDO
             if (!interaction.deferred && !interaction.replied) {
                 await interaction.deferUpdate();
             }
@@ -194,10 +193,10 @@ class OrderService {
                 });
             }
 
-            // ⭐ ENVIAR RESPOSTA TEMPORÁRIA PARA CONFIRMAR QUE CHEGOU ATÉ AQUI
+            // ⭐ RESPOSTA TEMPORÁRIA
             const tempEmbed = new EmbedBuilder()
                 .setTitle('🔄 Processando Aprovação...')
-                .setDescription(`Pedido #${orderId} está sendo processado.\n\nBuscando contas do usuário...`)
+                .setDescription(`Pedido #${orderId} está sendo processado.\n\nBuscando contas do cliente...`)
                 .setColor('#faa61a')
                 .setTimestamp();
 
@@ -208,11 +207,11 @@ class OrderService {
 
             console.log(`[DEBUG OrderService.approveOrder] Temporary response sent`);
 
-            // Continuar com o resto da lógica...
+            // ⭐ BUSCAR USUÁRIO PELO DISCORD ID (não pela tabela users)
             const User = require('../models/User');
             const user = await User.findByDiscordId(order.user_id);
 
-            console.log(`[DEBUG OrderService.approveOrder] User lookup completed`);
+            console.log(`[DEBUG OrderService.approveOrder] User lookup completed for Discord ID: ${order.user_id}`);
 
             if (!user) {
                 const errorEmbed = new EmbedBuilder()
@@ -226,16 +225,17 @@ class OrderService {
                 });
             }
 
-            // Buscar amizades/contas do usuário
+            // ⭐ BUSCAR AMIZADES/CONTAS DO CLIENTE (não contas admin)
             const Friendship = require('../models/Friendship');
-            const friendships = await Friendship.findByUserId(user.id);
+            const clientFriendships = await Friendship.findByUserId(user.id);
 
-            console.log(`[DEBUG OrderService.approveOrder] Found ${friendships.length} friendships`);
+            console.log(`[DEBUG OrderService.approveOrder] Found ${clientFriendships.length} client friendships`);
 
-            if (friendships.length === 0) {
+            if (clientFriendships.length === 0) {
                 const errorEmbed = new EmbedBuilder()
-                    .setTitle('❌ Sem Contas')
-                    .setDescription('Este usuário não possui contas adicionadas ao sistema.')
+                    .setTitle('❌ Sem Contas Adicionadas')
+                    .setDescription('Este cliente não possui contas adicionadas ao sistema.\n\n' +
+                        'O cliente precisa usar o botão "Add Account" para adicionar suas contas primeiro.')
                     .setColor('#ed4245');
 
                 return await interaction.editReply({
@@ -244,68 +244,101 @@ class OrderService {
                 });
             }
 
-            // ⭐ BUSCAR CONTAS COM RP SUFICIENTE
+            // ⭐ VERIFICAR TEMPO DE AMIZADE E SALDO DAS CONTAS
             const Account = require('../models/Account');
-            const accountsWithBalance = [];
+            const eligibleAccounts = [];
+            const ineligibleAccounts = [];
+            const minDays = config.orderSettings?.minFriendshipDays || 7;
 
-            for (const friendship of friendships) {
+            for (const friendship of clientFriendships) {
                 const account = await Account.findById(friendship.account_id);
-                console.log(`[DEBUG] Checking account ${account?.nickname}: ${account?.rp_amount} RP (need ${order.total_rp})`);
 
-                if (account && account.rp_amount >= order.total_rp) {
-                    accountsWithBalance.push({
-                        ...account,
-                        lol_nickname: friendship.lol_nickname,
-                        lol_tag: friendship.lol_tag,
-                        friendship_id: friendship.id
-                    });
+                if (!account) continue;
+
+                // Calcular dias desde que foi adicionado
+                const now = new Date();
+                const addedAt = new Date(friendship.added_at);
+                const daysSince = Math.floor((now - addedAt) / (1000 * 60 * 60 * 24));
+
+                const friendshipData = {
+                    ...account,
+                    friendship_id: friendship.id,
+                    lol_nickname: friendship.lol_nickname,
+                    lol_tag: friendship.lol_tag,
+                    days_since_added: daysSince,
+                    days_remaining: Math.max(0, minDays - daysSince)
+                };
+
+                // ⭐ VERIFICAR SE TEM TEMPO SUFICIENTE E RP
+                if (daysSince >= minDays && account.rp_amount >= order.total_rp) {
+                    eligibleAccounts.push(friendshipData);
+                    console.log(`[DEBUG] Account ${account.nickname}: ✅ Eligible (${daysSince} days, ${account.rp_amount} RP)`);
+                } else {
+                    ineligibleAccounts.push(friendshipData);
+                    console.log(`[DEBUG] Account ${account.nickname}: ❌ Not eligible (${daysSince}/${minDays} days, ${account.rp_amount}/${order.total_rp} RP)`);
                 }
             }
 
-            console.log(`[DEBUG] Found ${accountsWithBalance.length} accounts with sufficient balance`);
+            console.log(`[DEBUG] Found ${eligibleAccounts.length} eligible accounts, ${ineligibleAccounts.length} ineligible`);
 
-            console.log(`[DEBUG] Found 2 accounts with sufficient balance`);
+            // ⭐ SE NÃO HÁ CONTAS ELEGÍVEIS
+            if (eligibleAccounts.length === 0) {
+                let reasonsText = '';
 
-            // ⭐ PULAR A ATUALIZAÇÃO DE STATUS POR ENQUANTO
-            console.log(`[DEBUG] Skipping status update, going directly to menu creation...`);
+                ineligibleAccounts.forEach(acc => {
+                    const timeIssue = acc.days_since_added < minDays;
+                    const rpIssue = acc.rp_amount < order.total_rp;
 
-            try {
-                console.log(`[DEBUG] Starting select menu creation...`);
-
-                // ⭐ CRIAR OPÇÕES MANUALMENTE
-                const selectOptions = [
-                    {
-                        label: `${accountsWithBalance[0].nickname} (${accountsWithBalance[0].rp_amount.toLocaleString()} RP)`,
-                        description: `Nick LoL: ${accountsWithBalance[0].lol_nickname}#${accountsWithBalance[0].lol_tag}`,
-                        value: accountsWithBalance[0].id.toString()
+                    let reason = '';
+                    if (timeIssue && rpIssue) {
+                        reason = `⏳ ${acc.days_remaining} dias restantes | 💎 Faltam ${order.total_rp - acc.rp_amount} RP`;
+                    } else if (timeIssue) {
+                        reason = `⏳ Faltam ${acc.days_remaining} dias para elegibilidade`;
+                    } else if (rpIssue) {
+                        reason = `💎 RP insuficiente (tem ${acc.rp_amount.toLocaleString()}, precisa ${order.total_rp.toLocaleString()})`;
                     }
-                ];
 
-                // Adicionar segunda conta se existir
-                if (accountsWithBalance.length > 1) {
-                    selectOptions.push({
-                        label: `${accountsWithBalance[1].nickname} (${accountsWithBalance[1].rp_amount.toLocaleString()} RP)`,
-                        description: `Nick LoL: ${accountsWithBalance[1].lol_nickname}#${accountsWithBalance[1].lol_tag}`,
-                        value: accountsWithBalance[1].id.toString()
-                    });
-                }
+                    reasonsText += `**${acc.nickname}** (${acc.lol_nickname}#${acc.lol_tag})\n${reason}\n\n`;
+                });
 
-                console.log(`[DEBUG] Options created:`, selectOptions);
+                const errorEmbed = new EmbedBuilder()
+                    .setTitle('❌ Nenhuma Conta Elegível')
+                    .setDescription(
+                        `Nenhuma conta do cliente está elegível para este pedido.\n\n` +
+                        `**Requisitos:**\n` +
+                        `• ⏰ Mínimo ${minDays} dias de amizade\n` +
+                        `• 💎 Mínimo ${order.total_rp.toLocaleString()} RP\n\n` +
+                        `**Status das contas do cliente:**\n\n${reasonsText}`
+                    )
+                    .addFields([
+                        {
+                            name: '💡 Soluções',
+                            value: `• Aguardar o tempo mínimo de amizade\n• Cliente adicionar RP nas contas\n• Cliente adicionar novas contas`,
+                            inline: false
+                        }
+                    ])
+                    .setColor('#ed4245');
 
-                // ⭐ USAR MÉTODO ALTERNATIVO - BOTÕES EM VEZ DE SELECT MENU
-                const { ButtonBuilder, ButtonStyle, ActionRowBuilder } = require('discord.js');
+                await interaction.editReply({
+                    embeds: [errorEmbed],
+                    components: []
+                });
+                return;
+            }
 
-                console.log(`[DEBUG] Creating buttons instead of select menu...`);
+            // ⭐ ATUALIZAR STATUS PARA SELEÇÃO
+            await OrderLog.updateStatus(orderId, 'AWAITING_ACCOUNT_SELECTION');
+            console.log(`[DEBUG] Order status updated to AWAITING_ACCOUNT_SELECTION`);
 
-                const buttons = accountsWithBalance.slice(0, 5).map((account, index) =>
+            // ⭐ CRIAR BOTÕES PARA AS CONTAS ELEGÍVEIS
+            try {
+                const buttons = eligibleAccounts.slice(0, 5).map((account, index) =>
                     new ButtonBuilder()
                         .setCustomId(`select_account_${orderId}_${account.id}`)
                         .setLabel(`${account.nickname} (${account.rp_amount.toLocaleString()} RP)`)
-                        .setStyle(ButtonStyle.Primary)
-                        .setEmoji('🎮')
+                        .setStyle(ButtonStyle.Success)
+                        .setEmoji('✅')
                 );
-
-                console.log(`[DEBUG] Created ${buttons.length} buttons`);
 
                 const rows = [];
                 for (let i = 0; i < buttons.length; i += 5) {
@@ -313,22 +346,51 @@ class OrderService {
                     rows.push(row);
                 }
 
-                console.log(`[DEBUG] Created ${rows.length} button rows`);
-
+                // ⭐ EMBED COM INFORMAÇÕES DO CLIENTE
                 const selectionEmbed = new EmbedBuilder()
-                    .setTitle(`💰 Selecionar Conta para Débito`)
+                    .setTitle(`✅ Pagamento Aprovado - Selecionar Conta do Cliente`)
                     .setDescription(
-                        `✅ **Pagamento aprovado para o Pedido #${orderId}**\n\n` +
+                        `**Pedido #${orderId} aprovado!**\n\n` +
                         `**Cliente:** <@${order.user_id}>\n` +
                         `**Total a debitar:** ${order.total_rp.toLocaleString()} RP\n` +
-                        `**Contas disponíveis:** ${accountsWithBalance.length}\n\n` +
-                        `🔹 Clique na conta que deve ter o RP debitado:`
+                        `**Contas elegíveis do cliente:** ${eligibleAccounts.length}\n\n` +
+                        `🎮 **Selecione qual conta do CLIENTE deve ter o RP debitado:**`
                     )
-                    .setColor('#00ff00')
+                    .addFields([
+                        {
+                            name: '✅ Contas Elegíveis',
+                            value: eligibleAccounts.map(acc =>
+                                `**${acc.nickname}** (${acc.lol_nickname}#${acc.lol_tag})\n` +
+                                `💎 ${acc.rp_amount.toLocaleString()} RP | ⏰ ${acc.days_since_added} dias de amizade`
+                            ).join('\n\n'),
+                            inline: false
+                        }
+                    ])
+                    .setColor('#57f287')
                     .setFooter({ text: `Admin: ${interaction.user.tag} | Pedido ID: ${orderId}` })
                     .setTimestamp();
 
-                console.log(`[DEBUG] About to send reply with buttons...`);
+                // ⭐ MOSTRAR CONTAS INELEGÍVEIS SE HOUVER
+                if (ineligibleAccounts.length > 0) {
+                    let ineligibleText = ineligibleAccounts.map(acc => {
+                        const timeIssue = acc.days_since_added < minDays;
+                        const rpIssue = acc.rp_amount < order.total_rp;
+
+                        let status = '';
+                        if (timeIssue) status += `⏳ ${acc.days_remaining} dias restantes `;
+                        if (rpIssue) status += `💎 Faltam ${order.total_rp - acc.rp_amount} RP`;
+
+                        return `**${acc.nickname}** - ${status}`;
+                    }).join('\n');
+
+                    selectionEmbed.addFields([
+                        {
+                            name: '❌ Contas Não Elegíveis',
+                            value: ineligibleText.substring(0, 1024),
+                            inline: false
+                        }
+                    ]);
+                }
 
                 await interaction.editReply({
                     content: null,
@@ -336,107 +398,26 @@ class OrderService {
                     components: rows
                 });
 
-                console.log(`[DEBUG] Account selection sent successfully with buttons!`);
+                console.log(`[DEBUG] Account selection sent successfully with ${eligibleAccounts.length} eligible accounts!`);
 
             } catch (buttonError) {
                 console.error('[ERROR] Button creation failed:', buttonError);
-                console.error('[ERROR] Stack:', buttonError.stack);
 
-                // ⭐ FALLBACK FINAL - APENAS TEXTO
+                // ⭐ FALLBACK - LISTA MANUAL
                 const fallbackEmbed = new EmbedBuilder()
                     .setTitle('⚠️ Seleção Manual Necessária')
                     .setDescription(
-                        `**Contas do usuário ${order.user_id}:**\n\n` +
-                        accountsWithBalance.map((acc, index) =>
+                        `**Contas elegíveis do cliente:**\n\n` +
+                        eligibleAccounts.map((acc, index) =>
                             `**${index + 1}.** ${acc.nickname}\n` +
+                            `   🏷️ Nick: ${acc.lol_nickname}#${acc.lol_tag}\n` +
                             `   💎 RP: ${acc.rp_amount.toLocaleString()}\n` +
-                            `   🎮 Nick: ${acc.lol_nickname}#${acc.lol_tag}\n` +
+                            `   ⏰ Amizade: ${acc.days_since_added} dias\n` +
                             `   🆔 Account ID: \`${acc.id}\`\n`
-                        ).join('\n') +
-                        `\n**Processo manual:**\n` +
-                        `1. Copie um dos Account IDs acima\n` +
-                        `2. Use comando manual para debitar RP\n` +
-                        `3. Marque pedido como concluído`
+                        ).join('\n')
                     )
                     .setColor('#faa61a')
                     .setTimestamp();
-
-                await interaction.editReply({
-                    embeds: [fallbackEmbed],
-                    components: []
-                });
-            }
-
-            if (accountsWithBalance.length === 0) {
-                await OrderLog.updateStatus(orderId, 'ERROR_INSUFFICIENT_BALANCE');
-
-                const errorEmbed = new EmbedBuilder()
-                    .setTitle('❌ RP Insuficiente')
-                    .setDescription(`Nenhuma conta do usuário possui RP suficiente.\n**Necessário:** ${order.total_rp.toLocaleString()} RP`)
-                    .setColor('#ed4245');
-
-                return await interaction.editReply({
-                    embeds: [errorEmbed],
-                    components: []
-                });
-            }
-
-            // ⭐ ATUALIZAR STATUS
-            await OrderLog.updateStatus(orderId, 'AWAITING_ACCOUNT_SELECTION');
-            console.log(`[DEBUG] Order status updated to AWAITING_ACCOUNT_SELECTION`);
-
-            // ⭐ CRIAR SELECT MENU - VERSÃO MAIS SIMPLES
-            try {
-                const { StringSelectMenuBuilder, ActionRowBuilder } = require('discord.js');
-
-                const selectOptions = accountsWithBalance.map(account => ({
-                    label: `${account.nickname} (${account.rp_amount.toLocaleString()} RP)`,
-                    description: `Nick LoL: ${account.lol_nickname}#${account.lol_tag}`,
-                    value: account.id.toString()
-                }));
-
-                console.log(`[DEBUG] Creating select menu with ${selectOptions.length} options`);
-
-                const selectMenu = new StringSelectMenuBuilder()
-                    .setCustomId(`select_account_${orderId}`)
-                    .setPlaceholder('Selecione a conta para debitar RP...')
-                    .addOptions(selectOptions.slice(0, 25));
-
-                const row = new ActionRowBuilder().addComponents(selectMenu);
-
-                const selectionEmbed = new EmbedBuilder()
-                    .setTitle(`💰 Selecionar Conta para Débito`)
-                    .setDescription(
-                        `✅ **Pagamento aprovado para o Pedido #${orderId}**\n\n` +
-                        `**Cliente:** <@${order.user_id}>\n` +
-                        `**Total a debitar:** ${order.total_rp.toLocaleString()} RP\n` +
-                        `**Contas disponíveis:** ${accountsWithBalance.length}\n\n` +
-                        `Selecione qual conta deve ter o RP debitado:`
-                    )
-                    .setColor('#00ff00')
-                    .setFooter({ text: `Admin: ${interaction.user.tag} | Pedido ID: ${orderId}` })
-                    .setTimestamp();
-
-                await interaction.editReply({
-                    content: null,
-                    embeds: [selectionEmbed],
-                    components: [row]
-                });
-
-                console.log(`[DEBUG] Account selection menu sent successfully`);
-
-            } catch (selectError) {
-                console.error('[ERROR] Select menu creation failed:', selectError);
-
-                const fallbackEmbed = new EmbedBuilder()
-                    .setTitle('⚠️ Erro no Menu')
-                    .setDescription(
-                        `Erro ao criar menu de seleção.\n\n` +
-                        `**Contas disponíveis:**\n` +
-                        accountsWithBalance.map(acc => `• ${acc.nickname} (${acc.rp_amount.toLocaleString()} RP)`).join('\n') +
-                        `\n\n**Admin:** Processe manualmente usando os IDs das contas.`
-                    )
-                    .setColor('#faa61a');
 
                 await interaction.editReply({
                     embeds: [fallbackEmbed],

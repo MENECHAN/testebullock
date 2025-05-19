@@ -41,7 +41,13 @@ async function fixCartsTable() {
 
         if (!hasUpdatedAt) {
             console.log('⚠️ Coluna "updated_at" não encontrada na tabela carts. Adicionando...');
-            await db.run('ALTER TABLE carts ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP');
+            
+            // ⭐ CORREÇÃO: Usar um valor padrão constante
+            await db.run('ALTER TABLE carts ADD COLUMN updated_at DATETIME DEFAULT NULL');
+            
+            // Atualizar registros existentes
+            await db.run('UPDATE carts SET updated_at = created_at WHERE updated_at IS NULL');
+            
             console.log('✅ Coluna "updated_at" adicionada à tabela carts com sucesso!');
         } else {
             console.log('ℹ️ Coluna "updated_at" já existe na tabela carts.');
@@ -99,7 +105,48 @@ async function createFriendshipLogsTable() {
     }
 }
 
-// Função para criar/corrigir tabela de logs de pedidos
+async function addSelectedAccountIdToOrderLogs() {
+    try {
+        console.log('🔄 Verificando coluna selected_account_id na tabela order_logs...');
+
+        const columns = await db.all("PRAGMA table_info(order_logs)");
+        const hasSelectedAccountId = columns.some(col => col.name === 'selected_account_id');
+
+        if (!hasSelectedAccountId) {
+            console.log('⚠️ Coluna "selected_account_id" não encontrada. Adicionando...');
+            await db.run('ALTER TABLE order_logs ADD COLUMN selected_account_id INTEGER NULL');
+            console.log('✅ Coluna "selected_account_id" adicionada com sucesso!');
+        } else {
+            console.log('ℹ️ Coluna "selected_account_id" já existe.');
+        }
+
+    } catch (error) {
+        console.error('❌ Erro ao adicionar coluna selected_account_id:', error);
+        throw error;
+    }
+}
+
+async function addSelectedAccountIdColumn() {
+    try {
+        console.log('🔄 Verificando coluna selected_account_id na tabela order_logs...');
+        
+        const columns = await db.all("PRAGMA table_info(order_logs)");
+        const hasSelectedAccountId = columns.some(col => col.name === 'selected_account_id');
+        
+        if (!hasSelectedAccountId) {
+            console.log('⚠️ Coluna "selected_account_id" não encontrada. Adicionando...');
+            await db.run('ALTER TABLE order_logs ADD COLUMN selected_account_id INTEGER NULL');
+            console.log('✅ Coluna "selected_account_id" adicionada com sucesso!');
+        } else {
+            console.log('ℹ️ Coluna "selected_account_id" já existe.');
+        }
+    } catch (error) {
+        console.error('❌ Erro ao adicionar coluna selected_account_id:', error);
+        throw error;
+    }
+}
+
+// Atualizar a função createOrderLogsTable para incluir a nova coluna
 async function createOrderLogsTable() {
     console.log('🔄 Verificando/adicionando colunas para order_logs...');
 
@@ -124,8 +171,6 @@ async function createOrderLogsTable() {
                 
                 // Remover a tabela atual
                 await db.run('DROP TABLE order_logs');
-                await db.run('ALTER TABLE cart_items ADD COLUMN category TEXT');
-                await db.run('ALTER TABLE cart_items ADD COLUMN original_item_id INTEGER');
                 
                 // Recriar tabela com estrutura correta
                 await db.run(`
@@ -142,6 +187,7 @@ async function createOrderLogsTable() {
                         order_channel_id VARCHAR(255),
                         processed_by_admin_id VARCHAR(255),
                         debited_from_account_id INT NULL,
+                        selected_account_id INTEGER NULL,
                         admin_notes TEXT,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -175,13 +221,21 @@ async function createOrderLogsTable() {
                     { name: 'processed_by_admin_id', definition: 'ALTER TABLE order_logs ADD COLUMN processed_by_admin_id VARCHAR(255)' },
                     { name: 'debited_from_account_id', definition: 'ALTER TABLE order_logs ADD COLUMN debited_from_account_id INT NULL' },
                     { name: 'admin_notes', definition: 'ALTER TABLE order_logs ADD COLUMN admin_notes TEXT' },
-                    { name: 'updated_at', definition: 'ALTER TABLE order_logs ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP' }
+                    { name: 'selected_account_id', definition: 'ALTER TABLE order_logs ADD COLUMN selected_account_id INTEGER NULL' },
+                    // ⭐ CORREÇÃO: Usar NULL para updated_at
+                    { name: 'updated_at', definition: 'ALTER TABLE order_logs ADD COLUMN updated_at TIMESTAMP NULL' }
                 ];
 
                 for (const col of columnsToAdd) {
                     if (!columnNames.includes(col.name)) {
                         try {
                             await db.run(col.definition);
+                            
+                            // ⭐ CORREÇÃO: Se for updated_at, atualizar com created_at para registros existentes
+                            if (col.name === 'updated_at') {
+                                await db.run('UPDATE order_logs SET updated_at = created_at WHERE updated_at IS NULL');
+                            }
+                            
                             console.log(`  ✅ Coluna ${col.name} adicionada.`);
                         } catch (e) {
                             console.error(`  ❌ Erro ao adicionar coluna ${col.name}:`, e.message);
@@ -218,6 +272,7 @@ async function createOrderLogsTable() {
                     order_channel_id VARCHAR(255),
                     processed_by_admin_id VARCHAR(255),
                     debited_from_account_id INT NULL,
+                    selected_account_id INTEGER NULL,
                     admin_notes TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -247,7 +302,58 @@ async function createOrderLogsTable() {
     }
 }
 
-// Função principal para aplicar todas as correções
+async function addNotificationColumnsToFriendships() {
+    try {
+        console.log('🔄 Verificando colunas de notificação na tabela friendships...');
+
+        const columns = await db.all("PRAGMA table_info(friendships)");
+        const columnNames = columns.map(col => col.name);
+
+        // Verificar coluna notified_7_days
+        if (!columnNames.includes('notified_7_days')) {
+            console.log('⚠️ Coluna "notified_7_days" não encontrada. Adicionando...');
+            await db.run('ALTER TABLE friendships ADD COLUMN notified_7_days TIMESTAMP NULL');
+            console.log('✅ Coluna "notified_7_days" adicionada com sucesso!');
+        } else {
+            console.log('ℹ️ Coluna "notified_7_days" já existe.');
+        }
+
+        // ⭐ OPCIONAL: Adicionar coluna para notificações de 30 dias (futuro)
+        if (!columnNames.includes('notified_30_days')) {
+            console.log('⚠️ Coluna "notified_30_days" não encontrada. Adicionando...');
+            await db.run('ALTER TABLE friendships ADD COLUMN notified_30_days TIMESTAMP NULL');
+            console.log('✅ Coluna "notified_30_days" adicionada com sucesso!');
+        } else {
+            console.log('ℹ️ Coluna "notified_30_days" já existe.');
+        }
+
+    } catch (error) {
+        console.error('❌ Erro ao adicionar colunas de notificação:', error);
+        throw error;
+    }
+}
+
+async function addNotifiedColumnToFriendships() {
+    try {
+        console.log('🔄 Verificando coluna notified_7_days na tabela friendships...');
+        
+        const columns = await db.all("PRAGMA table_info(friendships)");
+        const hasNotifiedColumn = columns.some(col => col.name === 'notified_7_days');
+        
+        if (!hasNotifiedColumn) {
+            console.log('⚠️ Coluna "notified_7_days" não encontrada. Adicionando...');
+            // ⭐ USAR NULL como valor padrão
+            await db.run('ALTER TABLE friendships ADD COLUMN notified_7_days TIMESTAMP NULL');
+            console.log('✅ Coluna "notified_7_days" adicionada com sucesso!');
+        } else {
+            console.log('ℹ️ Coluna "notified_7_days" já existe.');
+        }
+    } catch (error) {
+        console.error('❌ Erro ao adicionar coluna notified_7_days:', error);
+        throw error;
+    }
+}
+
 async function applyDatabaseFixes() {
     try {
         console.log('🔄 Aplicando correções no banco de dados...');
@@ -255,6 +361,9 @@ async function applyDatabaseFixes() {
         await fixCartItemsTable();
         await createFriendshipLogsTable();
         await createOrderLogsTable();
+        await fixCartsTable();
+        await addNotificationColumnsToFriendships(); // ⭐ NOME MAIS DESCRITIVO
+        await addSelectedAccountIdToOrderLogs(); // ⭐ NOVA CORREÇÃO
 
         console.log('✅ Todas as correções aplicadas com sucesso!');
     } catch (error) {
@@ -267,5 +376,8 @@ module.exports = {
     fixCartItemsTable,
     createFriendshipLogsTable,
     createOrderLogsTable,
-    fixCartsTable, // ⭐ EXPORTAR A NOVA FUNÇÃO
-    applyDatabaseFixes};
+    fixCartsTable,
+    addNotificationColumnsToFriendships,
+    addSelectedAccountIdToOrderLogs,
+    applyDatabaseFixes
+};
