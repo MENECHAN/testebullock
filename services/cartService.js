@@ -1,10 +1,103 @@
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder } = require('discord.js');
 const Cart = require('../models/Cart');
+const OrderLog = require('../models/OrderLog');
 const config = require('../config.json');
+
 const fs = require('fs');
 
 class CartService {
-    // Em services/cartService.js, corrija o método sendCartEmbed:
+
+    static async sendCheckoutEmbed(interaction, cartId, cartItems) {
+        try {
+            const cart = await Cart.findById(cartId);
+            if (!cart) {
+                const replyMethod = interaction.replied || interaction.deferred ? 'followUp' : 'reply';
+                await interaction[replyMethod]({ content: '❌ Carrinho não encontrado para o checkout.', ephemeral: true });
+                return;
+            }
+
+            const totalRP = cartItems.reduce((sum, item) => sum + item.skin_price, 0);
+            const rpToEurRate = config.orderSettings && typeof config.orderSettings.rpToEurRate === 'number' ? config.orderSettings.rpToEurRate : 0.01;
+            const totalPriceEUR = (totalRP * rpToEurRate).toFixed(2);
+
+            let paymentInstructions = "**ℹ️ Como Pagar:**\n\n";
+            if (config.paymentMethods) {
+                if (config.paymentMethods.paypal) {
+                    paymentInstructions += `**PayPal:**\n\`${config.paymentMethods.paypal}\`\n\n`;
+                }
+                if (config.paymentMethods.pix) {
+                    paymentInstructions += `**PIX (Chave):**\n\`${config.paymentMethods.pix}\`\n\n`;
+                }
+                if (config.paymentMethods.crypto && typeof config.paymentMethods.crypto === 'object') {
+                    paymentInstructions += "**Criptomoedas:**\n";
+                    for (const [coin, address] of Object.entries(config.paymentMethods.crypto)) {
+                        if (address) paymentInstructions += `* ${coin}: \`${address}\`\n`;
+                    }
+                    paymentInstructions += "\n";
+                }
+            } else {
+                paymentInstructions += "Nenhum método de pagamento configurado. Contate um administrador.\n\n";
+            }
+
+            paymentInstructions += "**➡️ Após o pagamento, por favor, envie o comprovante (print/imagem) NESTE CANAL.**\n" +
+                "Em seguida, clique no botão 'Já Enviei o Comprovante' abaixo.";
+
+            const checkoutEmbed = new EmbedBuilder()
+                .setTitle('🛒 Finalizar Pedido')
+                .setColor('#5cb85c')
+                .setDescription(`Seu pedido está quase pronto! Por favor, realize o pagamento de **${totalRP.toLocaleString()} RP** (equivalente a **€${totalPriceEUR} EUR**).`)
+                .addFields(
+                    { name: '📋 Itens no Carrinho', value: cartItems.map(item => `• ${item.skin_name} (${item.skin_price.toLocaleString()} RP)`).join('\n') || 'Nenhum item', inline: false },
+                    { name: '💳 Instruções de Pagamento', value: paymentInstructions, inline: false }
+                )
+                .setFooter({ text: `ID do Carrinho: ${cartId} | ID do Canal: ${interaction.channel.id}` })
+                .setTimestamp();
+
+            const itemsData = cartItems.map(item => ({ id: item.original_item_id || item.id, name: item.skin_name, price: item.skin_price, category: item.category, image_url: item.skin_image_url }));
+
+            let orderLogEntry = await OrderLog.findByCartIdAndStatus(cartId, ['PENDING_CHECKOUT', 'PENDING_PAYMENT_PROOF']);
+            let orderId;
+
+            if (orderLogEntry) {
+                orderId = orderLogEntry.id;
+                await OrderLog.updateStatus(orderId, 'PENDING_PAYMENT_PROOF', interaction.channel.id);
+            } else {
+                orderId = await OrderLog.create(
+                    cart.user_id,
+                    cartId,
+                    itemsData,
+                    totalRP,
+                    parseFloat(totalPriceEUR),
+                    'PENDING_PAYMENT_PROOF',
+                    null,
+                    interaction.channel.id
+                );
+            }
+
+            const row = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId(`payment_proof_sent_${cartId}_${orderId}`)
+                        .setLabel('✅ Já Enviei o Comprovante')
+                        .setStyle(ButtonStyle.Success),
+                    new ButtonBuilder()
+                        .setCustomId(`back_cart_${cartId}`)
+                        .setLabel('❌ Cancelar Checkout')
+                        .setStyle(ButtonStyle.Danger)
+                );
+
+            const replyMethod = interaction.replied || interaction.deferred ? 'editReply' : 'reply';
+            // A mensagem de checkout não deve ser efêmera para que o usuário possa interagir e ver as instruções
+            await interaction[replyMethod]({ embeds: [checkoutEmbed], components: [row], ephemeral: false });
+
+        } catch (error) {
+            console.error('Error sending checkout embed:', error);
+            const replyMethod = interaction.replied || interaction.deferred ? 'followUp' : 'reply';
+            // Esta mensagem de erro pode ser efêmera
+            await interaction[replyMethod]({ content: '❌ Erro ao exibir informações de checkout.', ephemeral: true }).catch(console.error);
+        }
+    }
+
     static async sendCartEmbed(channel, cart) {
         try {
             // Get cart items
@@ -31,8 +124,7 @@ class CartService {
                         `💎 ${item.skin_price.toLocaleString()} RP - ${(item.skin_price * 0.01).toFixed(2)}€\n\n`;
                 });
 
-                // CORREÇÃO: Remover referência a uniqueItems que não existe aqui
-                embed.setDescription(`**${items.length} itens no carrinho**\n\n${itemsList}`);
+                embed.setDescription(`Just click on search button to find your items.`);
                 embed.addFields(
                     {
                         name: '💎 Total RP',
@@ -348,15 +440,18 @@ class CartService {
 
             // CORREÇÃO: Botões de navegação APENAS se precisar de paginação
             if (needsPagination && totalPages > 1) {
+                const navButtons = [];
+
                 // Botão "Página anterior"
                 if (page > 1) {
                     navButtons.push(
                         new ButtonBuilder()
-                            .setCustomId(`searchpage_${cartId}_${page - 1}_${Buffer.from(JSON.stringify({ category, query: searchQuery })).toString('base64')}`)
+                            .setCustomId(`items_page_${cartId}_${category}_${page - 1}`)
                             .setLabel('◀️ Anterior')
                             .setStyle(ButtonStyle.Secondary)
                     );
                 }
+
                 // Botão de pesquisa (sempre presente)
                 navButtons.push(
                     new ButtonBuilder()
@@ -665,7 +760,7 @@ class CartService {
             navButtons.push(
                 new ButtonBuilder()
                     .setCustomId(`add_item_${cartId}`)
-                    .setLabel('🏷️ Categorias')
+                    .setLabel('🏷️ Voltar ás categorias')
                     .setStyle(ButtonStyle.Secondary)
             );
 

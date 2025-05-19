@@ -1,4 +1,6 @@
 const { Client, GatewayIntentBits } = require('discord.js');
+const OrderLog = require('./models/OrderLog'); // Certifique-se que o caminho está correto
+const OrderService = require('./services/orderService'); // Certifique-se que o caminho está correto
 const config = require('./config.json');
 const fs = require('fs');
 const path = require('path');
@@ -78,6 +80,40 @@ client.once('ready', async () => {
     setInterval(() => {
         catalogUpdater.cleanupOldBackups(7); // Keep backups for 7 days
     }, 24 * 60 * 60 * 1000); // Run every 24 hours
+});
+
+client.on('messageCreate', async message => {
+    if (message.author.bot) return;
+    if (!message.guild) return;
+    // Adicione uma verificação para ver se o canal é um canal de ticket/carrinho
+    // Isso pode ser pelo nome do canal, categoria, ou verificando no DB se é um order_channel_id ativo
+
+    try {
+        // Tenta encontrar um pedido que esteja aguardando comprovante neste canal
+        const order = await OrderLog.findActiveOrderByChannelId(message.channel.id, 'PENDING_PAYMENT_PROOF');
+
+        if (order && order.user_id === message.author.id) { // Apenas o dono do pedido pode enviar comprovante
+            if (message.attachments.size > 0) {
+                const attachment = message.attachments.first();
+                // Verifica se o anexo é uma imagem
+                if (attachment && attachment.contentType && attachment.contentType.startsWith('image/')) {
+                    
+                    await message.reply('✅ Comprovante de imagem recebido! Nossa equipe irá analisar em breve.').catch(console.error);
+                    
+                    // Atualiza o order_log com a URL do comprovante e muda status
+                    await OrderLog.addPaymentProof(order.id, attachment.url);
+                    
+                    // Envia notificação para o canal de administração para aprovação manual
+                    // Passa o 'client' para que o OrderService possa buscar canais/usuários
+                    await OrderService.sendOrderToAdminApproval(message.client, order.id); 
+                } else if (attachment) {
+                    await message.reply('⚠️ Por favor, envie um comprovante em formato de imagem (ex: .png, .jpg).').catch(console.error);
+                }
+            }
+        }
+    } catch (error) {
+        console.error('Error processing potential payment proof in messageCreate:', error);
+    }
 });
 
 // Interaction handler

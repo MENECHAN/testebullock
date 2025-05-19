@@ -94,6 +94,24 @@ module.exports = {
                     await handleBackToItems(interaction, params[1], params[2], params[3]);
                 }
                 break;
+                            // NOVO CASE PARA CHECKOUT
+            case 'checkout':
+                // customId: checkout_CARTID
+                const checkoutCartId = params[0];
+                await handleCheckout(interaction, checkoutCartId);
+                break;
+
+            // NOVO CASE PARA COMPROVANTE ENVIADO
+            case 'payment':
+                if (params[0] === 'proof' && params[1] === 'sent') {
+                    // customId: payment_proof_sent_CARTID_ORDERID
+                    const proofCartId = params[2]; // Ou o orderId se você mudou o customId para ser apenas _orderId
+                    const proofOrderId = params[3]; // Ajuste aqui. Se o customId é payment_proof_sent_ORDERID, então proofOrderId = params[2]
+                                                    // Na implementação de sendCheckoutEmbed, o customId é payment_proof_sent_${cartId}_${orderId}
+                                                    // Então params[2] é cartId, params[3] é orderId
+                    await OrderService.handleClientSentProof(interaction, proofOrderId); // Passar o orderId
+                }
+                break;
             case 'items':
                 if (params[0] === 'page') {
                     await handleItemsPage(interaction, params[1], params[2], params[3]);
@@ -133,6 +151,7 @@ module.exports = {
                     }
                 }
                 break;
+                
         }
     }
 };
@@ -154,6 +173,7 @@ async function handleSearchPageSimple(interaction, cartId, page, encodedData) {
         });
     }
 }
+
 
 
 // Em handlers/buttonHandler.js, adicione esta função:
@@ -656,31 +676,25 @@ async function handleCategorySearch(interaction, cartId, category) {
 
 async function handleCheckout(interaction, cartId) {
     try {
-        await interaction.deferUpdate();
-
         const cart = await Cart.findById(cartId);
         if (!cart) {
-            return await interaction.followUp({
-                content: '❌ Carrinho não encontrado.',
-                ephemeral: true
-            });
+            // Se a interação já foi respondida/deferida, use followUp.
+            const replyMethod = interaction.replied || interaction.deferred ? 'followUp' : 'reply';
+            return await interaction[replyMethod]({ content: '❌ Carrinho não encontrado.', ephemeral: true });
         }
 
         const items = await Cart.getItems(cartId);
         if (items.length === 0) {
-            return await interaction.followUp({
-                content: '❌ Seu carrinho está vazio.',
-                ephemeral: true
-            });
+            const replyMethod = interaction.replied || interaction.deferred ? 'followUp' : 'reply';
+            return await interaction[replyMethod]({ content: '❌ Seu carrinho está vazio.', ephemeral: true });
         }
 
-        // Send checkout embed
-        await CartService.sendCheckoutEmbed(interaction.channel, cart);
+        // CartService.sendCheckoutEmbed agora lida com a resposta à interação
+        await CartService.sendCheckoutEmbed(interaction, cartId, items);
+
     } catch (error) {
         console.error('Error handling checkout:', error);
-        await interaction.followUp({
-            content: '❌ Erro ao processar checkout.',
-            ephemeral: true
-        });
+        const replyMethod = interaction.replied || interaction.deferred ? 'followUp' : 'reply';
+        await interaction[replyMethod]({ content: '❌ Erro ao processar checkout.', ephemeral: true }).catch(console.error);
     }
 }

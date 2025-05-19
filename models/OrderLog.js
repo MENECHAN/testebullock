@@ -60,16 +60,156 @@ class OrderLog {
         }
     }
 
-    static async create(cartId, userId, accountId, action, adminId = null, rpDebited = 0, oldRpAmount = 0, newRpAmount = 0, notes = null) {
+        static async findByCartIdAndStatus(cartId, statusArray) {
+        if (!Array.isArray(statusArray) || statusArray.length === 0) {
+            console.warn("findByCartIdAndStatus foi chamado com statusArray inválido.");
+            return null;
+        }
+        // Cria uma string de placeholders (?, ?, ?) para a cláusula IN
+        const placeholders = statusArray.map(() => '?').join(',');
+        const query = `SELECT * FROM order_logs WHERE cart_id = ? AND status IN (${placeholders}) ORDER BY created_at DESC LIMIT 1`;
+        
         try {
-            const query = `
-                INSERT INTO order_logs (cart_id, user_id, account_id, action, admin_id, rp_debited, old_rp_amount, new_rp_amount, notes) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `;
-            const result = await db.run(query, [cartId, userId, accountId, action, adminId, rpDebited, oldRpAmount, newRpAmount, notes]);
-            return result.lastID;
+            // Usar db.get() pois esperamos no máximo 1 linha devido ao LIMIT 1
+            const row = await db.get(query, [cartId, ...statusArray]);
+            if (row && row.items_data) {
+                try {
+                    row.items_data = JSON.parse(row.items_data);
+                } catch (e) {
+                    console.error(`Falha ao fazer parse de items_data para o pedido com cartId ${cartId} em findByCartIdAndStatus:`, e, "Dado bruto:", row.items_data);
+                    row.items_data = []; // Fallback seguro
+                }
+            } else if (row) {
+                row.items_data = []; // Caso items_data seja null/undefined
+            }
+            return row;
         } catch (error) {
-            console.error('Error creating order log:', error);
+            console.error('Erro ao buscar order log por cart ID e status:', error);
+            throw error;
+        }
+    }
+
+        static async create(userId, cartId, itemsData, totalRp, totalPrice, status = 'PENDING_CHECKOUT', paymentProofUrl = null, orderChannelId = null) {
+        const query = `INSERT INTO order_logs (user_id, cart_id, items_data, total_rp, total_price, status, payment_proof_url, order_channel_id, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`;
+        try {
+            // Para INSERT com sqlite3, db.run retorna um objeto this que contém lastID
+            const result = await new Promise((resolve, reject) => {
+                db.run(query, [
+                    userId,
+                    cartId,
+                    JSON.stringify(itemsData),
+                    totalRp,
+                    totalPrice,
+                    status,
+                    paymentProofUrl,
+                    orderChannelId
+                ], function(err) { // Não usar arrow function aqui para ter acesso ao `this` correto
+                    if (err) {
+                        reject(err);
+                    } else {
+                        resolve({ insertId: this.lastID }); // this.lastID contém o ID do registro inserido
+                    }
+                });
+            });
+            return result.insertId;
+        } catch (error) {
+            console.error("Erro em OrderLog.create:", error);
+            throw error;
+        }
+    }
+
+    static async findActiveOrderByChannelId(channelId, status) {
+        const query = 'SELECT * FROM order_logs WHERE order_channel_id = ? AND status = ? ORDER BY created_at DESC LIMIT 1';
+        try {
+            const row = await db.get(query, [channelId, status]);
+            if (row && row.items_data) {
+                try {
+                    row.items_data = JSON.parse(row.items_data);
+                } catch (e) {
+                    row.items_data = [];
+                }
+            } else if (row) {
+                row.items_data = [];
+            }
+            return row;
+        } catch (error) {
+            console.error('Erro ao buscar pedido ativo por channel ID e status:', error);
+            throw error;
+        }
+    }
+
+    static async updateStatus(orderId, status, orderChannelId = null) {
+        let query = 'UPDATE order_logs SET status = ?, updated_at = CURRENT_TIMESTAMP';
+        const params = [status];
+        if (orderChannelId !== null && orderChannelId !== undefined) { // Verifica se orderChannelId foi passado
+            query += ', order_channel_id = ?';
+            params.push(orderChannelId);
+        }
+        query += ' WHERE id = ?';
+        params.push(orderId);
+        
+        try {
+            const result = await new Promise((resolve, reject) => {
+                db.run(query, params, function(err) {
+                    if (err) reject(err);
+                    else resolve({ affectedRows: this.changes });
+                });
+            });
+            return result.affectedRows > 0;
+        } catch (error) {
+            console.error('Erro ao atualizar status do pedido:', error);
+            throw error;
+        }
+    }
+
+    static async addPaymentProof(orderId, paymentProofUrl) {
+        const query = 'UPDATE order_logs SET payment_proof_url = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?';
+        const params = [paymentProofUrl, 'PENDING_MANUAL_APPROVAL', orderId];
+        try {
+            const result = await new Promise((resolve, reject) => {
+                db.run(query, params, function(err) {
+                    if (err) reject(err);
+                    else resolve({ affectedRows: this.changes });
+                });
+            });
+            return result.affectedRows > 0;
+        } catch (error) {
+            console.error('Erro ao adicionar comprovante de pagamento:', error);
+            throw error;
+        }
+    }
+
+    static async assignAdminAndAccount(orderId, adminUserId, debitedAccountId, newStatus = 'COMPLETED', adminNotes = null) {
+        const query = `UPDATE order_logs SET processed_by_admin_id = ?, debited_from_account_id = ?, status = ?, admin_notes = ?, updated_at = CURRENT_TIMESTAMP
+                       WHERE id = ?`;
+        try {
+            const result = await new Promise((resolve, reject) => {
+                db.run(query, [adminUserId, debitedAccountId, newStatus, adminNotes, orderId], function(err) {
+                    if (err) reject(err);
+                    else resolve({ affectedRows: this.changes });
+                });
+            });
+            return result.affectedRows > 0;
+        } catch (error) {
+            console.error('Erro ao designar admin e conta ao pedido:', error);
+            throw error;
+        }
+    }
+
+    static async setRejected(orderId, adminUserId, adminNotes = null) {
+        const query = `UPDATE order_logs SET status = 'REJECTED', processed_by_admin_id = ?, admin_notes = ?, updated_at = CURRENT_TIMESTAMP
+                       WHERE id = ?`;
+        try {
+            const result = await new Promise((resolve, reject) => {
+                db.run(query, [adminUserId, adminNotes, orderId], function(err) {
+                    if (err) reject(err);
+                    else resolve({ affectedRows: this.changes });
+                });
+            });
+            return result.affectedRows > 0;
+        } catch (error) {
+            console.error('Erro ao rejeitar pedido:', error);
             throw error;
         }
     }
