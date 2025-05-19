@@ -1,6 +1,6 @@
 const { Client, GatewayIntentBits } = require('discord.js');
-const OrderLog = require('./models/OrderLog'); // Certifique-se que o caminho está correto
-const OrderService = require('./services/orderService'); // Certifique-se que o caminho está correto
+const OrderLog = require('./models/OrderLog');
+const OrderService = require('./services/orderService');
 const config = require('./config.json');
 const fs = require('fs');
 const path = require('path');
@@ -10,6 +10,9 @@ const friendshipLogsCommand = require('./commands/slash/friendship-logs');
 
 // Import auto-updater
 const CatalogAutoUpdater = require('./CatalogAutoUpdater');
+
+// ⭐ IMPORT DO NOVO SERVIÇO DE NOTIFICAÇÃO
+const FriendshipNotificationService = require('./services/FriendshipNotificationService.js');
 
 // Check if required files exist
 const requiredFiles = [
@@ -38,7 +41,7 @@ const { runMigrations } = require('./database/migrations');
 
 // Import handlers
 const buttonHandler = require('./handlers/buttonHandler');
-const selectMenuHandler = require('./handlers/selectMenuhandler');
+const selectMenuHandler = require('./handlers/selectMenuHandler');
 const modalHandler = require('./handlers/modalHandler');
 
 // Import commands
@@ -56,8 +59,9 @@ const client = new Client({
     ]
 });
 
-// Initialize auto-updater
+// Initialize services
 let catalogUpdater;
+let friendshipNotificationService; // ⭐ NOVA VARIÁVEL
 
 // Bot ready event
 client.once('ready', async () => {
@@ -65,7 +69,6 @@ client.once('ready', async () => {
 
     // Initialize database
     try {
-
         await Database.initialize();
         await applyDatabaseFixes();
         await runMigrations();
@@ -78,6 +81,11 @@ client.once('ready', async () => {
     // Initialize catalog auto-updater
     catalogUpdater = new CatalogAutoUpdater(client);
     console.log('🔄 Catalog auto-updater initialized!');
+
+    // ⭐ INICIALIZAR SERVIÇO DE NOTIFICAÇÃO DE AMIZADES
+    friendshipNotificationService = new FriendshipNotificationService(client);
+    friendshipNotificationService.start();
+    console.log('🔔 Friendship notification service initialized!');
 
     // Clean up old backups every day
     setInterval(() => {
@@ -243,6 +251,10 @@ client.on('interactionCreate', async (interaction) => {
                 case 'catalog-manage':
                     await catalogUpdater.handleCatalogCommand(interaction);
                     break;
+                // ⭐ NOVO COMANDO PARA NOTIFICAÇÕES
+                case 'friendship-notifications':
+                    await handleFriendshipNotificationCommand(interaction);
+                    break;
                 default:
                     console.log(`Unknown command: ${interaction.commandName}`);
             }
@@ -273,6 +285,152 @@ client.on('interactionCreate', async (interaction) => {
     }
 });
 
+// ⭐ HANDLER PARA COMANDOS DE NOTIFICAÇÃO
+async function handleFriendshipNotificationCommand(interaction) {
+    // Check if user has admin role
+    if (!interaction.member.roles.cache.has(config.adminRoleId)) {
+        return await interaction.reply({
+            content: '❌ Você não tem permissão para usar este comando.',
+            ephemeral: true
+        });
+    }
+
+    const subcommand = interaction.options.getSubcommand();
+
+    switch (subcommand) {
+        case 'stats':
+            await handleNotificationStats(interaction);
+            break;
+        case 'check':
+            await handleManualCheck(interaction);
+            break;
+        case 'test':
+            await handleTestNotification(interaction);
+            break;
+        case 'reset':
+            await handleResetNotifications(interaction);
+            break;
+    }
+}
+
+async function handleNotificationStats(interaction) {
+    try {
+        await interaction.deferReply({ ephemeral: true });
+
+        const stats = await friendshipNotificationService.getStatistics();
+
+        if (!stats) {
+            return await interaction.editReply({
+                content: '❌ Erro ao obter estatísticas.'
+            });
+        }
+
+        const { EmbedBuilder } = require('discord.js');
+        const embed = new EmbedBuilder()
+            .setTitle('📊 Estatísticas do Serviço de Notificação')
+            .addFields([
+                { name: '👥 Total de Amizades', value: stats.totalFriendships.toString(), inline: true },
+                { name: '✅ Amizades Elegíveis', value: `${stats.eligibleFriendships} (${stats.minDays}+ dias)`, inline: true },
+                { name: '🔔 Já Notificadas', value: stats.notifiedFriendships.toString(), inline: true },
+                { name: '⏳ Pendentes', value: stats.pendingNotifications.toString(), inline: true },
+                { name: '🔄 Status do Serviço', value: stats.isRunning ? '🟢 Ativo' : '🔴 Inativo', inline: true },
+                { name: '⏰ Período Mínimo', value: `${stats.minDays} dias`, inline: true }
+            ])
+            .setColor('#5865f2')
+            .setTimestamp();
+
+        await interaction.editReply({ embeds: [embed] });
+
+    } catch (error) {
+        console.error('Error getting notification stats:', error);
+        await interaction.editReply({
+            content: '❌ Erro ao obter estatísticas.'
+        });
+    }
+}
+
+async function handleManualCheck(interaction) {
+    try {
+        await interaction.deferReply({ ephemeral: true });
+
+        await interaction.editReply({
+            content: '🔄 Verificando amizades elegíveis...'
+        });
+
+        await friendshipNotificationService.checkEligibleFriendships();
+
+        await interaction.editReply({
+            content: '✅ Verificação concluída! Verifique os logs para detalhes.'
+        });
+
+    } catch (error) {
+        console.error('Error running manual check:', error);
+        await interaction.editReply({
+            content: '❌ Erro ao executar verificação manual.'
+        });
+    }
+}
+
+async function handleTestNotification(interaction) {
+    try {
+        await interaction.deferReply({ ephemeral: true });
+
+        const friendshipId = interaction.options.getInteger('friendship_id');
+
+        await interaction.editReply({
+            content: `🔄 Testando notificação para amizade ${friendshipId}...`
+        });
+
+        const success = await friendshipNotificationService.checkSpecificFriendship(friendshipId);
+
+        if (success) {
+            await interaction.editReply({
+                content: `✅ Notificação enviada com sucesso para amizade ${friendshipId}!`
+            });
+        } else {
+            await interaction.editReply({
+                content: `❌ Falha ao enviar notificação para amizade ${friendshipId}. Verifique se a amizade existe e é elegível.`
+            });
+        }
+
+    } catch (error) {
+        console.error('Error testing notification:', error);
+        await interaction.editReply({
+            content: '❌ Erro ao testar notificação.'
+        });
+    }
+}
+
+async function handleResetNotifications(interaction) {
+    try {
+        await interaction.deferReply({ ephemeral: true });
+
+        await interaction.editReply({
+            content: '⚠️ **ATENÇÃO**: Esta ação irá resetar TODAS as notificações de amizade!\n\nDeseja continuar? Resposta automática em 10 segundos...'
+        });
+
+        // Aguardar 10 segundos antes de executar
+        setTimeout(async () => {
+            try {
+                await friendshipNotificationService.resetNotifications();
+                await interaction.editReply({
+                    content: '✅ Todas as notificações foram resetadas!'
+                });
+            } catch (error) {
+                await interaction.editReply({
+                    content: '❌ Erro ao resetar notificações.'
+                });
+            }
+        }, 10000);
+
+    } catch (error) {
+        console.error('Error resetting notifications:', error);
+        await interaction.editReply({
+            content: '❌ Erro ao resetar notificações.'
+        });
+    }
+}
+
 // Error handling
 process.on('unhandledRejection', error => {
     console.error('Unhandled promise rejection:', error);
@@ -286,6 +444,12 @@ process.on('uncaughtException', error => {
 // Graceful shutdown
 process.on('SIGINT', () => {
     console.log('🛑 Shutting down bot...');
+    
+    // ⭐ PARAR SERVIÇOS ANTES DE FECHAR
+    if (friendshipNotificationService) {
+        friendshipNotificationService.stop();
+    }
+    
     client.destroy();
     process.exit(0);
 });
