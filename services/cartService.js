@@ -1,13 +1,14 @@
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder } = require('discord.js');
 const Cart = require('../models/Cart');
 const config = require('../config.json');
+const fs = require('fs');
 
 class CartService {
     static async sendCartEmbed(channel, cart) {
         try {
             // Get cart items
             const items = await Cart.getItems(cart.id);
-            
+
             // Calculate totals
             const totalRP = items.reduce((sum, item) => sum + item.skin_price, 0);
             const totalPrice = totalRP * 0.01; // 1 RP = 0.01 EUR
@@ -20,31 +21,33 @@ class CartService {
 
             if (items.length === 0) {
                 embed.setDescription('**Seu carrinho está vazio**\n\n' +
-                                   'Clique em "Add Item" para adicionar items ao seu carrinho.');
+                    'Clique em "Add Item" para adicionar items ao seu carrinho.');
             } else {
                 let itemsList = '';
                 items.forEach((item, index) => {
                     const emoji = this.getCategoryEmoji(item.category);
                     itemsList += `**${index + 1}.** ${emoji} ${item.skin_name}\n` +
-                               `💎 ${item.skin_price.toLocaleString()} RP - ${(item.skin_price * 0.01).toFixed(2)}€\n\n`;
+                        `💎 ${item.skin_price.toLocaleString()} RP - ${(item.skin_price * 0.01).toFixed(2)}€\n\n`;
                 });
 
-                embed.setDescription(itemsList);
+                embed.setDescription(`**${uniqueItems.length} itens encontrados**\n` +
+                   `Página ${page}/${totalPages}\n\n` +
+                   'Selecione um item ou pesquise por algo específico:');
                 embed.addFields(
-                    { 
-                        name: '💎 Total RP', 
-                        value: totalRP.toLocaleString(), 
-                        inline: true 
+                    {
+                        name: '💎 Total RP',
+                        value: totalRP.toLocaleString(),
+                        inline: true
                     },
-                    { 
-                        name: '💰 Total Preço', 
-                        value: `${totalPrice.toFixed(2)}€`, 
-                        inline: true 
+                    {
+                        name: '💰 Total Preço',
+                        value: `${totalPrice.toFixed(2)}€`,
+                        inline: true
                     },
-                    { 
-                        name: '📦 Itens', 
-                        value: items.length.toString(), 
-                        inline: true 
+                    {
+                        name: '📦 Itens',
+                        value: items.length.toString(),
+                        inline: true
                     }
                 );
             }
@@ -109,49 +112,105 @@ class CartService {
     static async sendCategorySelectEmbed(channel, cartId) {
         try {
             // Load catalog to get available categories
-            const fs = require('fs');
             let catalog = [];
-            
+
             if (fs.existsSync('./catalog.json')) {
                 catalog = JSON.parse(fs.readFileSync('./catalog.json', 'utf8'));
             }
 
-            // Get unique categories with counts
+            // Filter only CHAMPION_SKIN items and get unique categories
+            const skinItems = catalog;
+
+            // Remove duplicates based on name
+            const uniqueItems = [];
+            const seenNames = new Set();
+
+            skinItems.forEach(item => {
+                // Para campeões, use o ID ao invés do nome para evitar duplicatas
+                const identifier = item.inventoryType === 'CHAMPION' ? item.id : item.name;
+                if (!seenNames.has(identifier)) {
+                    seenNames.add(identifier);
+                    uniqueItems.push(item);
+                }
+            });
+
+            // Certifique-se de que esta parte está assim:
             const categoryStats = {};
-            catalog.forEach(item => {
-                const category = item.category || 'OTHER';
+            skinItems.forEach(item => {
+                let category;
+
+                // Se é chroma (RECOLOR), trate como categoria separada
+                if (item.subInventoryType === 'RECOLOR') {
+                    category = 'CHROMA';
+                }
+                // Se é bundle de chroma, trate como categoria separada
+                else if (item.subInventoryType === 'CHROMA_BUNDLE') {
+                    category = 'CHROMA_BUNDLE';
+                }
+                // Senão, use o inventoryType normal
+                else {
+                    category = item.inventoryType || 'OTHER';
+                }
+
                 categoryStats[category] = (categoryStats[category] || 0) + 1;
             });
+
+            // Adicione este filtro para mostrar apenas categorias desejadas:
+            const allowedCategories = [
+                'CHAMPION_SKIN',
+                'CHAMPION',
+                'WARD_SKIN',
+                'SUMMONER_ICON',
+                'EMOTE',
+                'BUNDLES',
+                'COMPANION',
+                'TFT_MAP_SKIN',
+                'TFT_DAMAGE_SKIN',
+                'HEXTECH_CRAFTING',
+                'CHROMA',           // Adicione esta
+                'CHROMA_BUNDLE'     // E esta
+            ];
+
+            // Filtra apenas as categorias permitidas
+            const filteredCategoryStats = {};
+            Object.entries(categoryStats).forEach(([category, count]) => {
+                if (allowedCategories.includes(category)) {
+                    filteredCategoryStats[category] = count;
+                }
+            });
+
+            // Use filteredCategoryStats ao invés de categoryStats no resto da função
 
             // Create embed
             const embed = new EmbedBuilder()
                 .setTitle('🏷️ Selecione uma Categoria')
                 .setDescription('**Escolha uma categoria para navegar pelos itens:**\n\n' +
-                              'Use o menu dropdown abaixo para selecionar o tipo de item que deseja adicionar.')
+                    'Use o menu dropdown abaixo para selecionar o tipo de item que deseja adicionar.')
                 .setColor('#5865f2')
                 .setTimestamp();
 
             // Add category statistics
-            if (Object.keys(categoryStats).length > 0) {
-                const statsText = Object.entries(categoryStats)
-                    .sort(([,a], [,b]) => b - a)
+            if (Object.keys(filteredCategoryStats).length > 0) {
+                const statsText = Object.entries(filteredCategoryStats)
+                    .sort(([, a], [, b]) => b - a)
                     .map(([category, count]) => `${this.getCategoryEmoji(category)} **${this.getCategoryName(category)}**: ${count} itens`)
                     .join('\n');
-                
+
                 embed.addFields([{
-                    name: '📊 Itens Disponíveis',
+                    name: '📊 Itens disponíveis',
                     value: statsText,
                     inline: false
                 }]);
             }
 
             // Create category select menu
-            const selectOptions = Object.entries(categoryStats)
-                .sort(([,a], [,b]) => b - a)
+            // Na função sendCategorySelectEmbed, verifique se esta parte está assim:
+            const selectOptions = Object.entries(filteredCategoryStats)
+                .sort(([, a], [, b]) => b - a)
                 .map(([category, count]) => ({
                     label: this.getCategoryName(category),
                     description: `${count} itens disponíveis`,
-                    value: category,
+                    value: category, // Deve ser exatamente a categoria (ex: CHAMPION_SKIN)
                     emoji: this.getCategoryEmojiObject(category)
                 }));
 
@@ -184,21 +243,38 @@ class CartService {
 
     static async sendItemsEmbed(channel, cartId, category, page = 1) {
         try {
-            // Load catalog
-            const fs = require('fs');
             let catalog = [];
-            
+
             if (fs.existsSync('./catalog.json')) {
                 catalog = JSON.parse(fs.readFileSync('./catalog.json', 'utf8'));
             }
 
-            // Filter items by category
-            const filteredItems = catalog.filter(item => item.category === category);
+            // Filter items by category and remove duplicates
+            const allItems = catalog.filter(item => {
+                if (category === 'CHROMA') {
+                    return item.subInventoryType === 'RECOLOR';
+                } else if (category === 'CHROMA_BUNDLE') {
+                    return item.subInventoryType === 'CHROMA_BUNDLE';
+                } else {
+                    return item.inventoryType === category && item.subInventoryType !== 'RECOLOR' && item.subInventoryType !== 'CHROMA_BUNDLE';
+                }
+            });
 
-            if (filteredItems.length === 0) {
+            // Remove duplicates based on name
+            const uniqueItems = [];
+            const seenNames = new Set();
+
+            allItems.forEach(item => {
+                if (!seenNames.has(item.name)) {
+                    seenNames.add(item.name);
+                    uniqueItems.push(item);
+                }
+            });
+
+            if (uniqueItems.length === 0) {
                 const embed = new EmbedBuilder()
                     .setTitle('❌ Nenhum Item Encontrado')
-                    .setDescription(`Não há itens disponíveis na categoria **${this.getCategoryName(category)}**.`)
+                    .setDescription(`Não há Itens disponíveis na categoria **${this.getCategoryName(category)}**.`)
                     .setColor('#ed4245')
                     .setTimestamp();
 
@@ -218,37 +294,51 @@ class CartService {
 
             // Pagination
             const itemsPerPage = 25;
-            const totalPages = Math.ceil(filteredItems.length / itemsPerPage);
+            const totalPages = Math.ceil(uniqueItems.length / itemsPerPage);
             const startIndex = (page - 1) * itemsPerPage;
             const endIndex = startIndex + itemsPerPage;
-            const currentItems = filteredItems.slice(startIndex, endIndex);
+            const currentItems = uniqueItems.slice(startIndex, endIndex);
 
             // Create embed
             const embed = new EmbedBuilder()
                 .setTitle(`${this.getCategoryEmoji(category)} ${this.getCategoryName(category)}`)
-                .setDescription(`**${filteredItems.length} itens encontrados**\n` +
-                              `Página ${page}/${totalPages}\n\n` +
-                              'Selecione um item no menu abaixo:')
+                .setDescription(`**${uniqueItems.length} itens encontrados**\n` +
+                    `Página ${page}/${totalPages}\n\n` +
+                    'Selecione um item ou pesquise por algo específico:')
                 .setColor('#5865f2')
                 .setTimestamp();
 
-            // Create item select menu
-            const selectOptions = currentItems.map(item => ({
-                label: item.name.length > 100 ? item.name.substring(0, 97) + '...' : item.name,
-                description: `${item.champion ? `${item.champion} - ` : ''}${item.price} RP`,
-                value: item.id.toString()
-            }));
+            const components = [];
 
-            const selectMenu = new StringSelectMenuBuilder()
-                .setCustomId(`item_select_${cartId}_${category}_${page}`)
-                .setPlaceholder('Selecione um item...')
-                .addOptions(selectOptions);
+            // Create item select menu if there are items
+            if (currentItems.length > 0) {
+                // Limitar para 25 itens no select menu (limite do Discord)
+                const itemsForSelect = currentItems.slice(0, 25);
 
-            const components = [new ActionRowBuilder().addComponents(selectMenu)];
+                const selectOptions = itemsForSelect.map(item => ({
+                    label: item.name.length > 100 ? item.name.substring(0, 97) + '...' : item.name,
+                    description: `${item.champion ? `${item.champion} - ` : ''}${item.price.toLocaleString()} RP (${(item.price * 0.01).toFixed(2)}€)`,
+                    value: item.id.toString()
+                }));
 
-            // Add navigation buttons
+                const selectMenu = new StringSelectMenuBuilder()
+                    .setCustomId(`item_select_${cartId}_${category}_${page}`)
+                    .setPlaceholder('Selecione um item...')
+                    .addOptions(selectOptions);
+                components.push(new ActionRowBuilder().addComponents(selectMenu));
+
+                // Se há mais itens que o limite, adicionar aviso
+                if (currentItems.length > 25) {
+                    embed.addFields([{
+                        name: 'ℹ️ Nota',
+                        value: `Mostrando os primeiros 25 itens desta página. Use os botões de navegação para ver mais itens.`,
+                        inline: false
+                    }]);
+                }
+            }
+
+            // Add navigation and search buttons
             const navButtons = [];
-
             if (page > 1) {
                 navButtons.push(
                     new ButtonBuilder()
@@ -256,13 +346,23 @@ class CartService {
                         .setLabel('◀️ Anterior')
                         .setStyle(ButtonStyle.Secondary)
                 );
+                console.log('sendItemsEmbed - search button customId:', `search_category_${cartId}_${category}`);
             }
 
+            // Add search button
+            navButtons.push(
+                new ButtonBuilder()
+                    .setCustomId(`search_category_${cartId}_${category}`) // Aqui deve usar a categoria correta
+                    .setLabel('🔍 Pesquisar')
+                    .setStyle(ButtonStyle.Primary)
+            );
+
+            // Add categories button
             navButtons.push(
                 new ButtonBuilder()
                     .setCustomId(`add_item_${cartId}`)
                     .setLabel('🏷️ Categorias')
-                    .setStyle(ButtonStyle.Primary)
+                    .setStyle(ButtonStyle.Secondary)
             );
 
             if (page < totalPages) {
@@ -278,10 +378,20 @@ class CartService {
                 components.push(new ActionRowBuilder().addComponents(navButtons));
             }
 
-            await channel.send({
-                embeds: [embed],
-                components: components
-            });
+            const messages = await channel.messages.fetch({ limit: 1 });
+            const lastMessage = messages.first();
+
+            if (lastMessage && lastMessage.author.id === channel.client.user.id && lastMessage.embeds.length > 0) {
+                await lastMessage.edit({
+                    embeds: [embed],
+                    components: components
+                });
+            } else {
+                await channel.send({
+                    embeds: [embed],
+                    components: components
+                });
+            }
 
         } catch (error) {
             console.error('Error sending items embed:', error);
@@ -292,16 +402,15 @@ class CartService {
     static async sendItemPreviewEmbed(channel, cartId, itemId) {
         try {
             // Load catalog
-            const fs = require('fs');
             let catalog = [];
-            
+
             if (fs.existsSync('./catalog.json')) {
                 catalog = JSON.parse(fs.readFileSync('./catalog.json', 'utf8'));
             }
 
             // Find item
             const item = catalog.find(i => i.id == itemId);
-            
+
             if (!item) {
                 const embed = new EmbedBuilder()
                     .setTitle('❌ Item Não Encontrado')
@@ -313,21 +422,24 @@ class CartService {
 
             // Create preview embed
             const embed = new EmbedBuilder()
-                .setTitle('🎨 Preview do Item')
+                .setTitle('🎨 Preview da Skin')
                 .setDescription(`**${item.name}**\n\n` +
-                              `${this.getCategoryEmoji(item.category)} **Categoria:** ${this.getCategoryName(item.category)}\n` +
-                              `${item.champion ? `🏆 **Campeão:** ${item.champion}\n` : ''}` +
-                              `💎 **Preço:** ${item.price.toLocaleString()} RP\n` +
-                              `💰 **Valor:** ${(item.price * 0.01).toFixed(2)}€\n` +
-                              `${item.rarity ? `✨ **Raridade:** ${item.rarity}\n` : ''}`)
+                    `${this.getCategoryEmoji(item.category)} **Categoria:** ${this.getCategoryName(item.category)}\n` +
+                    `${item.champion ? `🏆 **Campeão:** ${item.champion}\n` : ''}` +
+                    `💎 **Preço:** ${item.price.toLocaleString()} RP\n` +
+                    `💰 **Valor:** ${(item.price * 0.01).toFixed(2)}€\n` +
+                    `${item.rarity ? `✨ **Raridade:** ${item.rarity}\n` : ''}`)
                 .setColor('#5865f2')
                 .setTimestamp();
 
             // Add image if available
-            if (item.splashArt) {
-                embed.setImage(item.splashArt);
-            } else if (item.iconUrl) {
-                embed.setThumbnail(item.iconUrl);
+            const imageUrl = item.splashArt || item.splash_art || item.iconUrl;
+            if (imageUrl && (imageUrl.startsWith('http://') || imageUrl.startsWith('https://'))) {
+                if (item.splashArt || item.splash_art) {
+                    embed.setImage(imageUrl);
+                } else {
+                    embed.setThumbnail(imageUrl);
+                }
             }
 
             // Add tags if available
@@ -363,6 +475,145 @@ class CartService {
         }
     }
 
+    static async handleSearchInCategory(channel, cartId, category, searchQuery) {
+        try {
+            console.log('handleSearchInCategory - category:', category, 'searchQuery:', searchQuery); // DEBUG
+
+            // Load catalog
+            let catalog = [];
+
+            if (fs.existsSync('./catalog.json')) {
+                catalog = JSON.parse(fs.readFileSync('./catalog.json', 'utf8'));
+            }
+
+            const query = searchQuery.toLowerCase();
+
+            // Filter items by category and search query
+            // Filter items by category and search query
+            const allItems = catalog.filter(item => {
+                let matchesCategory = false;
+
+                if (category === 'CHROMA') {
+                    matchesCategory = item.subInventoryType === 'RECOLOR';
+                } else if (category === 'CHROMA_BUNDLE') {
+                    matchesCategory = item.subInventoryType === 'CHROMA_BUNDLE';
+                } else if (category === 'CHAMPION_SKIN') {
+                    // Para skins, filtrar por inventoryType e excluir chromas
+                    matchesCategory = item.inventoryType === 'CHAMPION_SKIN' &&
+                        item.subInventoryType !== 'RECOLOR' &&
+                        item.subInventoryType !== 'CHROMA_BUNDLE';
+                } else {
+                    // Para outras categorias
+                    matchesCategory = item.inventoryType === category;
+                }
+
+                const matchesSearch = item.name.toLowerCase().includes(query) ||
+                    (item.champion && item.champion.toLowerCase().includes(query)) ||
+                    (item.tags && item.tags.some(tag => tag.toLowerCase().includes(query)));
+
+                return matchesCategory && matchesSearch;
+            });
+            // Remove duplicates based on name
+            const uniqueItems = [];
+            const seenNames = new Set();
+
+            allItems.forEach(item => {
+                if (!seenNames.has(item.name)) {
+                    seenNames.add(item.name);
+                    uniqueItems.push(item);
+                }
+            });
+
+            if (uniqueItems.length === 0) {
+                const embed = new EmbedBuilder()
+                    .setTitle('🔍 Nenhum Resultado na Categoria')
+                    .setDescription(`Nenhuma skin encontrada para: **${searchQuery}** na categoria **${this.getCategoryName(category)}**\n\n` +
+                        'Tente:\n' +
+                        '• Termos mais simples\n' +
+                        '• Nome do campeão\n' +
+                        '• Nome da skin')
+                    .setColor('#ed4245')
+                    .setTimestamp();
+
+                const row = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId(`add_item_${cartId}`)
+                            .setLabel('◀️ Voltar às Categorias')
+                            .setStyle(ButtonStyle.Secondary)
+                    );
+
+                return await channel.send({
+                    embeds: [embed],
+                    components: [row]
+                });
+            }
+
+            // Create embed
+            let itemsList = '';
+            uniqueItems.slice(0, 10).forEach((item, index) => {
+                itemsList += `**${index + 1}.** ${item.name}\n`;
+                itemsList += `💰 ${item.price.toLocaleString()} RP - ${(item.price * 0.01).toFixed(2)}€\n`;
+                itemsList += '\n';
+            });
+
+            if (uniqueItems.length > 10) {
+                itemsList += `... e mais ${uniqueItems.length - 10} itens`;
+            }
+
+            const embed = new EmbedBuilder()
+                .setTitle('🔍 Resultados da Pesquisa na Categoria')
+                .setDescription(`**${uniqueItems.length} itens encontrados para:** ${searchQuery}\n` +
+                    `**Categoria:** ${this.getCategoryName(category)}\n\n` +
+                    (itemsList || 'Nenhum item encontrado'))
+                .setColor('#5865f2')
+                .setTimestamp();
+
+            // Create item select menu (limit to 25 items)
+            const selectOptions = uniqueItems.slice(0, 25).map(item => ({
+                label: item.name.length > 100 ? item.name.substring(0, 97) + '...' : item.name,
+                description: `${item.champion ? `${item.champion} - ` : ''}${item.price.toLocaleString()} RP (${(item.price * 0.01).toFixed(2)}€)`,
+                value: item.id.toString()
+            }));
+
+            const selectMenu = new StringSelectMenuBuilder()
+                .setCustomId(`search_result_select_${cartId}`)
+                .setPlaceholder('Selecione uma skin...')
+                .addOptions(selectOptions);
+
+            const row1 = new ActionRowBuilder().addComponents(selectMenu);
+
+            const row2 = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId(`add_item_${cartId}`)
+                        .setLabel('🏷️ Categorias')
+                        .setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder()
+                        .setCustomId(`search_category_${cartId}_${category}`)
+                        .setLabel('🔍 Nova Pesquisa')
+                        .setStyle(ButtonStyle.Secondary)
+                );
+
+            if (uniqueItems.length > 25) {
+                embed.addFields([{
+                    name: '⚠️ Muitos Resultados',
+                    value: `Mostrando as primeiras 25 de ${uniqueItems.length} skins.\nTente ser mais específico na pesquisa.`,
+                    inline: false
+                }]);
+            }
+
+            await channel.send({
+                embeds: [embed],
+                components: [row1, row2]
+            });
+
+        } catch (error) {
+            console.error('Error handling search in category:', error);
+            throw error;
+        }
+    }
+
     // Helper methods para categorias
     static getCategoryEmoji(category) {
         const emojis = {
@@ -374,106 +625,78 @@ class CartService {
             'WARD': '👁️',
             'ICON': '🖼️',
             'EMOTE': '😊',
+            'Epic': '⚡',
+            'Legendary': '🌟',
+            'Ultimate': '👑',
+            'Rare': '💎',
+            'Common': '🔸',
             'OTHER': '❓'
         };
-        return emojis[category] || '❓';
+        return emojis[category] || '🎨';
     }
 
     static getCategoryEmojiObject(category) {
-        const emojis = {
-            'SKIN': '🎨',
-            'CHAMPION': '🏆',
-            'CHROMA': '🌈',
-            'BUNDLE': '📦',
-            'CHROMA_BUNDLE': '🎁',
-            'WARD': '👁️',
-            'ICON': '🖼️',
-            'EMOTE': '😊',
-            'OTHER': '❓'
-        };
-        const emoji = emojis[category] || '❓';
+        const emoji = this.getCategoryEmoji(category);
         return { name: emoji };
     }
 
     static getCategoryName(category) {
         const names = {
-            'SKIN': 'Skins',
+            'CHAMPION_SKIN': 'Skins de Campeão',
             'CHAMPION': 'Campeões',
-            'CHROMA': 'Chromas',
-            'BUNDLE': 'Bundles',
-            'CHROMA_BUNDLE': 'Chroma Bundles',
-            'WARD': 'Ward Skins',
-            'ICON': 'Ícones',
+            'WARD_SKIN': 'Skins de Ward',
+            'SUMMONER_ICON': 'Ícones',
             'EMOTE': 'Emotes',
+            'BUNDLES': 'Pacotes',
+            'COMPANION': 'Companheiros',
+            'TFT_MAP_SKIN': 'Skins de Mapa TFT',
+            'TFT_DAMAGE_SKIN': 'Skins de Dano TFT',
+            'HEXTECH_CRAFTING': 'Itens Hextech',
+            'CHROMA': 'Chromas',
+            'CHROMA_BUNDLE': 'Pacotes de Chroma',
             'OTHER': 'Outros'
         };
         return names[category] || category;
-    } // Continuação do CartService.js
+    }
 
-    static async sendCheckoutEmbed(channel, cart) {
+    // Method to validate if item can be added to cart
+    static async validateItemAddition(cartId, itemId) {
         try {
-            const items = await Cart.getItems(cart.id);
-            const totalRP = items.reduce((sum, item) => sum + item.skin_price, 0);
-            const totalPrice = totalRP * 0.01;
+            // Check if item exists in catalog
+            const catalog = JSON.parse(fs.readFileSync('./catalog.json', 'utf8'));
+            const item = catalog.find(i => i.id == itemId);
 
-            const embed = new EmbedBuilder()
-                .setTitle('💳 Checkout - Finalizar Pedido')
-                .setDescription('**Resumo do seu pedido:**\n\n')
-                .setColor('#57f287')
-                .setTimestamp();
+            if (!item) {
+                throw new Error('Item não encontrado no catálogo');
+            }
 
-            // Add items to embed
-            let itemsList = '';
-            items.forEach((item, index) => {
-                const emoji = this.getCategoryEmoji(item.category);
-                itemsList += `${index + 1}. ${emoji} ${item.skin_name} - ${item.skin_price.toLocaleString()} RP\n`;
-            });
+            // Check if item is already in cart
+            const cartItems = await Cart.getItems(cartId);
+            const isInCart = cartItems.some(cartItem => cartItem.original_item_id == itemId);
 
-            embed.addFields(
-                { name: '🛍️ Itens', value: itemsList, inline: false },
-                { name: '💎 Total RP', value: totalRP.toLocaleString(), inline: true },
-                { name: '💰 Total', value: `${totalPrice.toFixed(2)}€`, inline: true }
-            );
+            if (isInCart) {
+                throw new Error('Esta skin já está no seu carrinho');
+            }
 
-            // Payment information
-            const paymentInfo = this.getPaymentInfo();
-            embed.addFields(paymentInfo);
+            // Check cart limits (if any)
+            if (cartItems.length >= config.orderSettings.maxItemsPerOrder) {
+                throw new Error(`Limite máximo de ${config.orderSettings.maxItemsPerOrder} itens por carrinho`);
+            }
 
-            embed.setFooter({ 
-                text: 'Após o pagamento, clique em "Pagamento Enviado"',
-                iconURL: channel.client.user.displayAvatarURL()
-            });
-
-            const row = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setCustomId(`payment_sent_${cart.id}`)
-                        .setLabel('✅ Pagamento Enviado')
-                        .setStyle(ButtonStyle.Success),
-                    new ButtonBuilder()
-                        .setCustomId(`back_cart_${cart.id}`)
-                        .setLabel('◀️ Voltar ao Carrinho')
-                        .setStyle(ButtonStyle.Secondary)
-                );
-
-            await channel.send({
-                embeds: [embed],
-                components: [row]
-            });
-
+            return { valid: true, item };
         } catch (error) {
-            console.error('Error sending checkout embed:', error);
-            throw error;
+            return { valid: false, error: error.message };
         }
     }
 
+    // Outros métodos permanecem os mesmos...
     static async sendCloseCartConfirmation(channel, cartId) {
         try {
             const embed = new EmbedBuilder()
                 .setTitle('🔒 Fechar Carrinho')
                 .setDescription('**Tem certeza que deseja fechar este carrinho?**\n\n' +
-                              '⚠️ Todos os itens serão removidos e este canal será deletado.\n' +
-                              'Esta ação não pode ser desfeita!')
+                    '⚠️ Todos os itens serão removidos e este canal será deletado.\n' +
+                    'Esta ação não pode ser desfeita!')
                 .setColor('#faa61a')
                 .setTimestamp();
 
@@ -500,75 +723,6 @@ class CartService {
         }
     }
 
-    static async handlePaymentSent(interaction, cartId) {
-        try {
-            await interaction.deferUpdate();
-
-            // Mark cart as completed
-            await Cart.updateStatus(cartId, 'completed');
-
-            // Send to orders channel
-            const ordersChannel = interaction.guild.channels.cache.get(config.encomendasChannelId);
-            if (ordersChannel) {
-                const cart = await Cart.findById(cartId);
-                const items = await Cart.getItems(cartId);
-                
-                // Get user from cart
-                const User = require('../models/User');
-                const user = await User.findById(cart.user_id);
-                const discordUser = await interaction.guild.members.fetch(user.discord_id);
-
-                const orderEmbed = new EmbedBuilder()
-                    .setTitle('📝 Nova Encomenda')
-                    .setDescription(`**Cliente:** ${discordUser.user.tag} (${discordUser.id})\n` +
-                                  `**Canal:** ${interaction.channel}\n` +
-                                  `**Total:** ${cart.total_price.toFixed(2)}€`)
-                    .setColor('#faa61a')
-                    .setTimestamp();
-
-                let itemsList = '';
-                items.forEach((item, index) => {
-                    const emoji = this.getCategoryEmoji(item.category);
-                    itemsList += `${index + 1}. ${emoji} ${item.skin_name}\n`;
-                });
-
-                orderEmbed.addFields({ name: 'Itens', value: itemsList });
-
-                await ordersChannel.send({ embeds: [orderEmbed] });
-            }
-
-            // Update channel message
-            const embed = new EmbedBuilder()
-                .setTitle('✅ Pagamento Recebido')
-                .setDescription('**Obrigado pela compra!**\n\n' +
-                              'Seu pagamento foi registrado e sua encomenda está sendo processada.\n' +
-                              'Você será notificado quando as skins forem entregues.\n\n' +
-                              'Este canal será fechado automaticamente em 5 minutos.')
-                .setColor('#57f287')
-                .setTimestamp();
-
-            await interaction.editReply({
-                embeds: [embed],
-                components: []
-            });
-
-            // Auto-close channel after 5 minutes
-            setTimeout(async () => {
-                try {
-                    await interaction.channel.delete();
-                } catch (error) {
-                    console.error('Error auto-closing channel:', error);
-                }
-            }, 300000); // 5 minutes
-
-        } catch (error) {
-            console.error('Error handling payment sent:', error);
-            await interaction.followUp({
-                content: '❌ Erro ao processar pagamento.',
-                ephemeral: true
-            });
-        }
-    }
 
     static async handleCloseCart(interaction, cartId) {
         try {
@@ -581,7 +735,7 @@ class CartService {
             const embed = new EmbedBuilder()
                 .setTitle('🔒 Carrinho Fechado')
                 .setDescription('Este carrinho foi fechado.\n' +
-                              'O canal será deletado em 10 segundos.')
+                    'O canal será deletado em 10 segundos.')
                 .setColor('#ed4245')
                 .setTimestamp();
 
@@ -605,179 +759,6 @@ class CartService {
                 content: '❌ Erro ao fechar carrinho.',
                 ephemeral: true
             });
-        }
-    }
-
-    static async handleSearchItems(channel, cartId, searchQuery) {
-        try {
-            // Load catalog
-            const fs = require('fs');
-            let catalog = [];
-            
-            if (fs.existsSync('./catalog.json')) {
-                catalog = JSON.parse(fs.readFileSync('./catalog.json', 'utf8'));
-            }
-
-            // Filter items by search query
-            const query = searchQuery.toLowerCase();
-            const filteredItems = catalog.filter(item => {
-                return item.name.toLowerCase().includes(query) ||
-                       (item.champion && item.champion.toLowerCase().includes(query)) ||
-                       (item.tags && item.tags.some(tag => tag.toLowerCase().includes(query)));
-            });
-
-            if (filteredItems.length === 0) {
-                const embed = new EmbedBuilder()
-                    .setTitle('🔍 Nenhum Resultado')
-                    .setDescription(`Nenhum item encontrado para: **${searchQuery}**\n\n` +
-                                  'Tente pesquisar por:\n' +
-                                  '• Nome do item\n' +
-                                  '• Nome do campeão\n' +
-                                  '• Categoria ou raridade')
-                    .setColor('#ed4245')
-                    .setTimestamp();
-
-                const row = new ActionRowBuilder()
-                    .addComponents(
-                        new ButtonBuilder()
-                            .setCustomId(`add_item_${cartId}`)
-                            .setLabel('◀️ Voltar às Categorias')
-                            .setStyle(ButtonStyle.Secondary)
-                    );
-
-                return await channel.send({
-                    embeds: [embed],
-                    components: [row]
-                });
-            }
-
-            // Create embed
-            const embed = new EmbedBuilder()
-                .setTitle('🔍 Resultados da Pesquisa')
-                .setDescription(`**${filteredItems.length} itens encontrados para:** ${searchQuery}\n\n` +
-                              'Selecione um item no menu abaixo:')
-                .setColor('#5865f2')
-                .setTimestamp();
-
-            // Create item select menu (limit to 25 items)
-            const selectOptions = filteredItems.slice(0, 25).map(item => ({
-                label: item.name.length > 100 ? item.name.substring(0, 97) + '...' : item.name,
-                description: `${item.category} - ${item.price} RP`,
-                value: item.id.toString()
-            }));
-
-            const selectMenu = new StringSelectMenuBuilder()
-                .setCustomId(`search_result_select_${cartId}`)
-                .setPlaceholder('Selecione um item...')
-                .addOptions(selectOptions);
-
-            const row1 = new ActionRowBuilder().addComponents(selectMenu);
-
-            const row2 = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setCustomId(`add_item_${cartId}`)
-                        .setLabel('🏷️ Categorias')
-                        .setStyle(ButtonStyle.Primary),
-                    new ButtonBuilder()
-                        .setCustomId(`search_more_${cartId}`)
-                        .setLabel('🔍 Nova Pesquisa')
-                        .setStyle(ButtonStyle.Secondary)
-                );
-
-            if (filteredItems.length > 25) {
-                embed.addFields([{
-                    name: '⚠️ Muitos Resultados',
-                    value: `Mostrando os primeiros 25 de ${filteredItems.length} resultados.\nTente ser mais específico na pesquisa.`,
-                    inline: false
-                }]);
-            }
-
-            await channel.send({
-                embeds: [embed],
-                components: [row1, row2]
-            });
-
-        } catch (error) {
-            console.error('Error handling search items:', error);
-            throw error;
-        }
-    }
-
-    static getPaymentInfo() {
-        const fields = [];
-
-        // PayPal
-        if (config.paymentInfo.paypal) {
-            fields.push({
-                name: '💸 PayPal',
-                value: `**Email:** ${config.paymentInfo.paypal.email}\n` +
-                       `**Nota:** ${config.paymentInfo.paypal.notes}`,
-                inline: false
-            });
-        }
-
-        // Crypto
-        if (config.paymentInfo.crypto) {
-            let cryptoInfo = '';
-            const crypto = config.paymentInfo.crypto;
-            
-            if (crypto.USDT_BEP20) cryptoInfo += `**USDT (BEP20):** ${crypto.USDT_BEP20}\n`;
-            if (crypto.LTC) cryptoInfo += `**LTC:** ${crypto.LTC}\n`;
-            if (crypto.ETH) cryptoInfo += `**ETH:** ${crypto.ETH}\n`;
-            if (crypto.BTC) cryptoInfo += `**BTC:** ${crypto.BTC}\n`;
-            
-            if (crypto.notes) cryptoInfo += `\n*${crypto.notes}*`;
-
-            if (cryptoInfo) {
-                fields.push({
-                    name: '🪙 Criptomoedas',
-                    value: cryptoInfo,
-                    inline: false
-                });
-            }
-        }
-
-        // Bank transfer
-        if (config.paymentInfo.bank) {
-            fields.push({
-                name: '🏦 Transferência Bancária',
-                value: config.paymentInfo.bank.instructions,
-                inline: false
-            });
-        }
-
-        return fields;
-    }
-
-    // Method to validate if item can be added to cart
-    static async validateItemAddition(cartId, itemId) {
-        try {
-            // Check if item exists in catalog
-            const fs = require('fs');
-            const catalog = JSON.parse(fs.readFileSync('./catalog.json', 'utf8'));
-            const item = catalog.find(i => i.id == itemId);
-            
-            if (!item) {
-                throw new Error('Item não encontrado no catálogo');
-            }
-
-            // Check if item is already in cart
-            const cartItems = await Cart.getItems(cartId);
-            const isInCart = cartItems.some(cartItem => cartItem.original_item_id == itemId);
-            
-            if (isInCart) {
-                throw new Error('Este item já está no seu carrinho');
-            }
-
-            // Check cart limits (if any)
-            if (cartItems.length >= config.orderSettings.maxItemsPerOrder) {
-                throw new Error(`Limite máximo de ${config.orderSettings.maxItemsPerOrder} itens por carrinho`);
-            }
-
-            return { valid: true, item };
-        } catch (error) {
-            return { valid: false, error: error.message };
         }
     }
 }

@@ -6,6 +6,8 @@ const Cart = require('../models/Cart');
 const TicketService = require('../services/ticketService');
 const CartService = require('../services/cartService');
 const PriceManagerHandler = require('../handlers/priceManagerHandler');
+const FriendshipService = require('../services/friendshipService');
+const OrderService = require('../services/orderService');
 
 module.exports = {
     async handle(interaction) {
@@ -20,6 +22,32 @@ module.exports = {
             await PriceManagerHandler.handleSearchButton(interaction);
             return;
         }
+
+        // ADICIONE ESTES HANDLERS AQUI:
+        // Handlers para pedidos de amizade
+        if (action === 'approve' && params[0] === 'friendship') {
+            await FriendshipService.approveFriendship(interaction, params[1]);
+            return;
+        }
+        if (action === 'reject' && params[0] === 'friendship') {
+            await FriendshipService.rejectFriendship(interaction, params[1]);
+            return;
+        }
+        if (action === 'friendship' && params[0] === 'info') {
+            await FriendshipService.showFriendshipInfo(interaction, params[1]);
+            return;
+        }
+
+        // Handlers para pedidos de compra
+        if (action === 'approve' && params[0] === 'order') {
+            await OrderService.approveOrder(interaction, params[1]);
+            return;
+        }
+        if (action === 'reject' && params[0] === 'order') {
+            await OrderService.rejectOrder(interaction, params[1]);
+            return;
+        }
+
 
         // Handlers do carrinho com dropdown
         switch (action) {
@@ -74,6 +102,12 @@ module.exports = {
             case 'search':
                 if (params[0] === 'more') {
                     await handleSearchMore(interaction, params[1]);
+                } else if (params[0] === 'category') {
+                    // CORREÇÃO: Juntar todos os parâmetros depois do cartId
+                    const cartId = params[1];
+                    const category = params.slice(2).join('_'); // Isso vai juntar SUMMONER_ICON corretamente
+                    console.log('buttonHandler search - cartId:', cartId, 'category:', category); // DEBUG
+                    await handleCategorySearch(interaction, cartId, category);
                 }
                 break;
             case 'checkout':
@@ -94,10 +128,10 @@ async function handleOpenCart(interaction) {
 
         // Create or get user
         const user = await User.findOrCreate(interaction.user.id, interaction.user.username);
-        
+
         // Check if user already has an active cart
         let cart = await Cart.findActiveByUserId(user.id);
-        
+
         if (cart) {
             // Check if channel still exists
             const existingChannel = interaction.guild.channels.cache.get(cart.ticket_channel_id);
@@ -114,19 +148,19 @@ async function handleOpenCart(interaction) {
 
         // Create new ticket channel
         const ticketChannel = await TicketService.createTicket(interaction.guild, interaction.user);
-        
+
         // Create new cart
         cart = await Cart.create(user.id, ticketChannel.id);
-        
+
         // Send initial cart embed
         await CartService.sendCartEmbed(ticketChannel, cart);
-        
+
         await interaction.editReply({
             content: `✅ Carrinho criado! Acesse ${ticketChannel}`
         });
     } catch (error) {
         console.error('Error opening cart:', error);
-        
+
         try {
             if (interaction.deferred) {
                 await interaction.editReply({
@@ -176,7 +210,7 @@ async function handleAddAccount(interaction) {
 
         // Get all accounts
         const accounts = await Account.findAvailable();
-        
+
         if (accounts.length === 0) {
             await tempChannel.delete();
             return await interaction.editReply({
@@ -188,14 +222,14 @@ async function handleAddAccount(interaction) {
         const embed = new EmbedBuilder()
             .setTitle('👥 Selecione uma Conta')
             .setDescription('**Escolha uma conta para adicionar como amigo:**\n\n' +
-                          'Clique no botão "Add Friend" da conta desejada.')
+                'Clique no botão "Add Friend" da conta desejada.')
             .setColor('#5865f2')
             .setTimestamp();
 
         const accountFields = accounts.map(account => ({
             name: `🎮 ${account.nickname}`,
             value: `**RP:** ${account.rp_amount.toLocaleString()}\n` +
-                   `**Amigos:** ${account.friends_count}/${account.max_friends}`,
+                `**Amigos:** ${account.friends_count}/${account.max_friends}`,
             inline: true
         }));
 
@@ -204,10 +238,10 @@ async function handleAddAccount(interaction) {
         // Create buttons for each account
         const rows = [];
         let components = [];
-        
+
         for (let i = 0; i < accounts.length; i++) {
             if (accounts[i].friends_count >= accounts[i].max_friends) continue;
-            
+
             components.push(
                 new ButtonBuilder()
                     .setCustomId(`add_friend_${accounts[i].id}`)
@@ -244,7 +278,7 @@ async function handleAddAccount(interaction) {
         });
     } catch (error) {
         console.error('Error handling add account:', error);
-        
+
         try {
             if (interaction.deferred) {
                 await interaction.editReply({
@@ -265,7 +299,7 @@ async function handleAddAccount(interaction) {
 async function handleAddFriend(interaction, accountId) {
     try {
         const account = await Account.findById(accountId);
-        
+
         if (!account) {
             return await interaction.reply({
                 content: '❌ Conta não encontrada.',
@@ -334,7 +368,7 @@ async function handleRemoveItem(interaction, cartId) {
         await interaction.deferUpdate();
 
         const cartItems = await Cart.getItems(cartId);
-        
+
         if (cartItems.length === 0) {
             return await interaction.followUp({
                 content: '❌ Seu carrinho está vazio.',
@@ -396,7 +430,7 @@ async function handleConfirmAddItem(interaction, cartId, itemId) {
 
         // Validate item addition
         const validation = await CartService.validateItemAddition(cartId, itemId);
-        
+
         if (!validation.valid) {
             return await interaction.followUp({
                 content: `❌ ${validation.error}`,
@@ -406,14 +440,14 @@ async function handleConfirmAddItem(interaction, cartId, itemId) {
 
         // Add item to cart
         await Cart.addItem(cartId, validation.item.name, validation.item.price, validation.item.splashArt || validation.item.iconUrl, validation.item.category);
-        
+
         // Update cart totals
         await Cart.updateTotals(cartId);
-        
+
         // Return to cart view
         const cart = await Cart.findById(cartId);
         await CartService.sendCartEmbed(interaction.channel, cart);
-        
+
         await interaction.followUp({
             content: `✅ **${validation.item.name}** adicionado ao carrinho!`,
             ephemeral: true
@@ -449,7 +483,7 @@ async function handleCancelClose(interaction) {
 async function handleBackToCart(interaction, cartId) {
     try {
         await interaction.deferUpdate();
-        
+
         const cart = await Cart.findById(cartId);
         if (!cart) {
             return await interaction.followUp({
@@ -471,7 +505,7 @@ async function handleBackToCart(interaction, cartId) {
 async function handleBackToItems(interaction, cartId, category, page) {
     try {
         await interaction.deferUpdate();
-        
+
         await CartService.sendItemsEmbed(interaction.channel, cartId, category, parseInt(page));
     } catch (error) {
         console.error('Error going back to items:', error);
@@ -485,7 +519,7 @@ async function handleBackToItems(interaction, cartId, category, page) {
 async function handleItemsPage(interaction, cartId, category, page) {
     try {
         await interaction.deferUpdate();
-        
+
         await CartService.sendItemsEmbed(interaction.channel, cartId, category, parseInt(page));
     } catch (error) {
         console.error('Error changing items page:', error);
@@ -516,6 +550,35 @@ async function handleSearchMore(interaction, cartId) {
         await interaction.showModal(modal);
     } catch (error) {
         console.error('Error handling search more:', error);
+        await interaction.reply({
+            content: '❌ Erro ao processar busca.',
+            ephemeral: true
+        });
+    }
+}
+
+async function handleCategorySearch(interaction, cartId, category) {
+    try {
+        console.log('handleCategorySearch - cartId:', cartId, 'category:', category); // DEBUG
+        
+        const modal = new ModalBuilder()
+            .setCustomId(`search_category_modal_${cartId}_${category}`)
+            .setTitle(`Pesquisar em ${CartService.getCategoryName(category)}`);
+
+        const searchInput = new TextInputBuilder()
+            .setCustomId('search_query')
+            .setLabel('Buscar por nome, campeão ou palavra-chave')
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('Ex: Yasuo, PROJECT, Elementalist...')
+            .setRequired(true)
+            .setMaxLength(100);
+
+        const firstActionRow = new ActionRowBuilder().addComponents(searchInput);
+        modal.addComponents(firstActionRow);
+
+        await interaction.showModal(modal);
+    } catch (error) {
+        console.error('Error handling category search:', error);
         await interaction.reply({
             content: '❌ Erro ao processar busca.',
             ephemeral: true

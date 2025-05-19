@@ -22,16 +22,24 @@ module.exports = {
                 await PriceManagerHandler.handleSearchModal(interaction);
                 return;
             }
-            if (interaction.customId === 'import_config_modal') {
+            if (interaction.customId.startsWith('import_config_modal')) {
                 await PriceManagerHandler.handleImportConfigModal(interaction);
+                return;
+            }
+
+            // Handlers de pesquisa
+            if (interaction.customId.startsWith('search_category_modal_')) {
+                await handleSearchCategoryModal(interaction);
                 return;
             }
 
             // Handlers do carrinho
             if (interaction.customId.startsWith('lol_nickname_modal_')) {
                 await handleLolNicknameModal(interaction);
+                return; // ESTE RETURN ESTAVA FALTANDO
             } else if (interaction.customId.startsWith('search_items_modal_')) {
                 await handleSearchItemsModal(interaction);
+                return; // ESTE RETURN ESTAVA FALTANDO
             }
         } catch (error) {
             console.error('Error in modal handler:', error);
@@ -43,79 +51,70 @@ module.exports = {
     }
 };
 
+async function handleSearchCategoryModal(interaction) {
+    try {
+        await interaction.deferUpdate();
+
+        // Debug: vamos ver o customId completo
+        console.log('Full customId:', interaction.customId);
+        
+        const parts = interaction.customId.split('_');
+        console.log('Parts:', parts); // DEBUG
+        
+        const cartId = parts[3];
+        // CORREÇÃO: Juntar todas as partes restantes para formar a categoria
+        const category = parts.slice(4).join('_');
+        
+        console.log('Parsed - cartId:', cartId, 'category:', category); // DEBUG
+        
+        const searchQuery = interaction.fields.getTextInputValue('search_query');
+
+        if (!searchQuery || searchQuery.trim().length < 2) {
+            return await interaction.followUp({
+                content: '❌ A busca deve ter pelo menos 2 caracteres.',
+                ephemeral: true
+            });
+        }
+
+        await CartService.handleSearchInCategory(interaction.channel, cartId, category, searchQuery.trim());
+    } catch (error) {
+        console.error('Error handling search category modal:', error);
+        await interaction.followUp({
+            content: '❌ Erro ao processar busca.',
+            ephemeral: true
+        });
+    }
+}
+
 async function handleLolNicknameModal(interaction) {
     try {
-        await interaction.deferReply({ ephemeral: true });
-
         const accountId = interaction.customId.split('_')[3];
         const lolNickname = interaction.fields.getTextInputValue('lol_nickname');
 
         // Validate riot tag format
         if (!validateRiotTag(lolNickname)) {
-            return await interaction.editReply({
-                content: '❌ Formato inválido! Use o formato: NickName#TAG (ex: Player#BR1)'
+            return await interaction.reply({
+                content: '❌ Formato inválido! Use o formato: NickName#TAG (ex: Player#BR1)',
+                ephemeral: true
             });
         }
 
         const [nickname, tag] = lolNickname.split('#');
 
-        // Get or create user
-        const user = await User.findOrCreate(interaction.user.id, interaction.user.username);
-        
-        // Get account
-        const account = await Account.findById(accountId);
-        if (!account) {
-            return await interaction.editReply({
-                content: '❌ Conta não encontrada.'
-            });
-        }
-
-        // Check if already friends
-        const existingFriendship = await Friendship.findByUserAndAccount(user.id, accountId);
-        if (existingFriendship) {
-            return await interaction.editReply({
-                content: '❌ Você já é amigo desta conta.'
-            });
-        }
-
-        // Check account friend limit
-        if (account.friends_count >= account.max_friends) {
-            return await interaction.editReply({
-                content: '❌ Esta conta já atingiu o limite máximo de amigos.'
-            });
-        }
-
-        // Add friendship
-        await Friendship.create(user.id, accountId, nickname, tag);
-        
-        // Update account friend count
-        await Account.incrementFriendCount(accountId);
-
-        // Show user's added accounts
-        await showUserAccounts(interaction, user.id);
-
-        // Delete temp channel after 5 seconds
-        setTimeout(async () => {
-            try {
-                if (interaction.channel && interaction.channel.name.startsWith('account-')) {
-                    await interaction.channel.delete();
-                }
-            } catch (error) {
-                console.error('Error deleting channel:', error);
-            }
-        }, 5000);
+        // Processar através do FriendshipService
+        await FriendshipService.requestFriendship(interaction, accountId, nickname, tag);
 
     } catch (error) {
         console.error('Error handling LOL nickname modal:', error);
-        
+
         try {
             if (interaction.deferred) {
                 await interaction.editReply({
-                    content: '❌ Erro ao adicionar amizade.'
+                    content: '❌ Erro ao processar pedido de amizade.'
                 });
             } else {
                 await interaction.reply({
-                    content: '❌ Erro ao adicionar amizade.',
+                    content: '❌ Erro ao processar pedido de amizade.',
                     ephemeral: true
                 });
             }
@@ -145,7 +144,7 @@ async function handleSearchItemsModal(interaction) {
 
     } catch (error) {
         console.error('Error handling search items modal:', error);
-        
+
         try {
             await interaction.editReply({
                 content: '❌ Erro ao processar busca.',
@@ -164,7 +163,7 @@ async function handleSearchItemsModal(interaction) {
 async function showUserAccounts(interaction, userId) {
     try {
         const friendships = await Friendship.findByUserId(userId);
-        
+
         if (friendships.length === 0) {
             const embed = new EmbedBuilder()
                 .setTitle('✅ Amizade Adicionada')
@@ -185,11 +184,11 @@ async function showUserAccounts(interaction, userId) {
             const account = await Account.findById(friendship.account_id);
             if (account) {
                 const timeSince = getTimeSince(friendship.added_at);
-                
+
                 embed.addFields({
                     name: `🎮 ${account.nickname}`,
                     value: `**Seu Nick:** ${friendship.lol_nickname}#${friendship.lol_tag}\n` +
-                           `**Adicionado:** ${timeSince} atrás`,
+                        `**Adicionado:** ${timeSince} atrás`,
                     inline: true
                 });
             }
@@ -205,7 +204,7 @@ function getTimeSince(dateString) {
     const now = new Date();
     const past = new Date(dateString);
     const diffInMinutes = Math.floor((now - past) / (1000 * 60));
-    
+
     if (diffInMinutes < 60) {
         return `${diffInMinutes} minuto(s)`;
     } else if (diffInMinutes < 1440) {

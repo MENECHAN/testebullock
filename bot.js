@@ -2,6 +2,7 @@ const { Client, GatewayIntentBits } = require('discord.js');
 const config = require('./config.json');
 const fs = require('fs');
 const path = require('path');
+const { applyDatabaseFixes } = require('./database/schema-fix');
 
 // Import auto-updater
 const CatalogAutoUpdater = require('./CatalogAutoUpdater');
@@ -33,7 +34,7 @@ const { runMigrations } = require('./database/migrations');
 
 // Import handlers
 const buttonHandler = require('./handlers/buttonHandler');
-const selectMenuHandler = require('./handlers/selectMenuHandler');
+const selectMenuHandler = require('./handlers/selectMenuhandler');
 const modalHandler = require('./handlers/modalHandler');
 
 // Import commands
@@ -61,6 +62,7 @@ client.once('ready', async () => {
     // Initialize database
     try {
         await Database.initialize();
+        await applyDatabaseFixes(); 
         await runMigrations();
         console.log('✅ Database initialized!');
     } catch (error) {
