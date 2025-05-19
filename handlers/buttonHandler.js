@@ -99,28 +99,97 @@ module.exports = {
                     await handleItemsPage(interaction, params[1], params[2], params[3]);
                 }
                 break;
+            case 'searchpage':
+                await handleSearchPageSimple(interaction, params[1], params[2], params[3]);
+                break;
             case 'search':
                 if (params[0] === 'more') {
                     await handleSearchMore(interaction, params[1]);
                 } else if (params[0] === 'category') {
                     // CORREÇÃO: Juntar todos os parâmetros depois do cartId
                     const cartId = params[1];
-                    const category = params.slice(2).join('_'); // Isso vai juntar SUMMONER_ICON corretamente
-                    console.log('buttonHandler search - cartId:', cartId, 'category:', category); // DEBUG
+                    const category = params.slice(2).join('_');
                     await handleCategorySearch(interaction, cartId, category);
-                }
-                break;
-            case 'checkout':
-                await handleCheckout(interaction, params[0]);
-                break;
-            case 'payment':
-                if (params[0] === 'sent') {
-                    await CartService.handlePaymentSent(interaction, params[1]);
+                } else if (params[0] === 'result' && params[1] === 'page') {
+                    // CORREÇÃO: search_result_page_cartId_category_page_encodedQuery
+                    const cartId = params[2];
+                    const categoryParts = [];
+                    let pageIndex = -1;
+
+                    // Encontrar onde está o número da página
+                    for (let i = 3; i < params.length; i++) {
+                        if (!isNaN(parseInt(params[i]))) {
+                            pageIndex = i;
+                            break;
+                        }
+                        categoryParts.push(params[i]);
+                    }
+
+                    if (pageIndex !== -1 && pageIndex + 1 < params.length) {
+                        const category = categoryParts.join('_');
+                        const page = params[pageIndex];
+                        const encodedQuery = params[pageIndex + 1];
+                        await handleSearchResultPage(interaction, cartId, category, page, encodedQuery);
+                    }
                 }
                 break;
         }
     }
 };
+
+
+async function handleSearchPageSimple(interaction, cartId, page, encodedData) {
+    try {
+        await interaction.deferUpdate();
+
+        const data = JSON.parse(Buffer.from(encodedData, 'base64').toString());
+        const { category, query } = data;
+        
+        await CartService.handleSearchInCategory(interaction.channel, cartId, category, query, parseInt(page));
+    } catch (error) {
+        console.error('Error handling search page:', error);
+        await interaction.followUp({
+            content: '❌ Erro ao carregar página.',
+            ephemeral: true
+        });
+    }
+}
+
+
+// Em handlers/buttonHandler.js, adicione esta função:
+async function handleSearchResultPage(interaction, cartId, category, page, encodedQuery) {
+    try {
+        await interaction.deferUpdate();
+
+        const searchQuery = decodeURIComponent(encodedQuery);
+        console.log('handleSearchResultPage:', { cartId, category, page, searchQuery }); // Debug
+
+        await CartService.handleSearchInCategory(interaction.channel, cartId, category, searchQuery, parseInt(page));
+    } catch (error) {
+        console.error('Error handling search result page:', error);
+        await interaction.followUp({
+            content: '❌ Erro ao carregar página.',
+            ephemeral: true
+        });
+    }
+}
+
+
+// Em handlers/buttonHandler.js, adicionar esta função:
+async function handleSearchPage(interaction, cartId, category, page, encodedQuery) {
+    try {
+        await interaction.deferUpdate();
+
+        const searchQuery = decodeURIComponent(encodedQuery);
+        await CartService.handleSearchInCategory(interaction.channel, cartId, category, searchQuery, parseInt(page));
+    } catch (error) {
+        console.error('Error handling search page:', error);
+        await interaction.followUp({
+            content: '❌ Erro ao carregar página.',
+            ephemeral: true
+        });
+    }
+}
 
 async function handleOpenCart(interaction) {
     try {
@@ -519,7 +588,6 @@ async function handleBackToItems(interaction, cartId, category, page) {
 async function handleItemsPage(interaction, cartId, category, page) {
     try {
         await interaction.deferUpdate();
-
         await CartService.sendItemsEmbed(interaction.channel, cartId, category, parseInt(page));
     } catch (error) {
         console.error('Error changing items page:', error);
@@ -560,7 +628,7 @@ async function handleSearchMore(interaction, cartId) {
 async function handleCategorySearch(interaction, cartId, category) {
     try {
         console.log('handleCategorySearch - cartId:', cartId, 'category:', category); // DEBUG
-        
+
         const modal = new ModalBuilder()
             .setCustomId(`search_category_modal_${cartId}_${category}`)
             .setTitle(`Pesquisar em ${CartService.getCategoryName(category)}`);

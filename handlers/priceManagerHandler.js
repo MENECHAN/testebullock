@@ -269,7 +269,7 @@ class PriceManagerHandler {
             }
 
             // Limitar a 25 itens (limite do Discord)
-            const itemsToShow = filteredItems.slice(0, 25);
+            const itemsToShow = filteredItems.slice(0, 10);
 
             const selectMenu = new StringSelectMenuBuilder()
                 .setCustomId('item_price_select')

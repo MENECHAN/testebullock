@@ -5,6 +5,7 @@ const Friendship = require('../models/Friendship');
 const CartService = require('../services/cartService');
 const { validateRiotTag } = require('../utils/validators');
 const PriceManagerHandler = require('./priceManagerHandler');
+const FriendshipService = require('../services/friendshipService');
 
 module.exports = {
     async handle(interaction) {

@@ -4,6 +4,7 @@ const config = require('../config.json');
 const fs = require('fs');
 
 class CartService {
+    // Em services/cartService.js, corrija o método sendCartEmbed:
     static async sendCartEmbed(channel, cart) {
         try {
             // Get cart items
@@ -30,9 +31,8 @@ class CartService {
                         `💎 ${item.skin_price.toLocaleString()} RP - ${(item.skin_price * 0.01).toFixed(2)}€\n\n`;
                 });
 
-                embed.setDescription(`**${uniqueItems.length} itens encontrados**\n` +
-                   `Página ${page}/${totalPages}\n\n` +
-                   'Selecione um item ou pesquise por algo específico:');
+                // CORREÇÃO: Remover referência a uniqueItems que não existe aqui
+                embed.setDescription(`**${items.length} itens no carrinho**\n\n${itemsList}`);
                 embed.addFields(
                     {
                         name: '💎 Total RP',
@@ -217,7 +217,7 @@ class CartService {
             const selectMenu = new StringSelectMenuBuilder()
                 .setCustomId(`category_select_${cartId}`)
                 .setPlaceholder('Selecione uma categoria...')
-                .addOptions(selectOptions.slice(0, 25)); // Discord limit
+                .addOptions(selectOptions.slice(0, 10)); // Discord limit
 
             const row1 = new ActionRowBuilder().addComponents(selectMenu);
 
@@ -241,6 +241,7 @@ class CartService {
         }
     }
 
+    // Em services/cartService.js, método sendItemsEmbed
     static async sendItemsEmbed(channel, cartId, category, page = 1) {
         try {
             let catalog = [];
@@ -272,9 +273,10 @@ class CartService {
             });
 
             if (uniqueItems.length === 0) {
+                // ... código de nenhum item encontrado permanece igual
                 const embed = new EmbedBuilder()
                     .setTitle('❌ Nenhum Item Encontrado')
-                    .setDescription(`Não há Itens disponíveis na categoria **${this.getCategoryName(category)}**.`)
+                    .setDescription(`Não há itens disponíveis na categoria **${this.getCategoryName(category)}**.`)
                     .setColor('#ed4245')
                     .setTimestamp();
 
@@ -292,28 +294,35 @@ class CartService {
                 });
             }
 
-            // Pagination
-            const itemsPerPage = 25;
-            const totalPages = Math.ceil(uniqueItems.length / itemsPerPage);
-            const startIndex = (page - 1) * itemsPerPage;
-            const endIndex = startIndex + itemsPerPage;
+            // CORREÇÃO: Paginação apenas se mais de 10 itens
+            const needsPagination = uniqueItems.length > 10;
+            const itemsPerPage = needsPagination ? 10 : uniqueItems.length;
+            const totalPages = needsPagination ? Math.ceil(uniqueItems.length / itemsPerPage) : 1;
+            const startIndex = needsPagination ? (page - 1) * itemsPerPage : 0;
+            const endIndex = needsPagination ? startIndex + itemsPerPage : uniqueItems.length;
             const currentItems = uniqueItems.slice(startIndex, endIndex);
 
             // Create embed
             const embed = new EmbedBuilder()
                 .setTitle(`${this.getCategoryEmoji(category)} ${this.getCategoryName(category)}`)
-                .setDescription(`**${uniqueItems.length} itens encontrados**\n` +
-                    `Página ${page}/${totalPages}\n\n` +
-                    'Selecione um item ou pesquise por algo específico:')
                 .setColor('#5865f2')
                 .setTimestamp();
 
+            // CORREÇÃO: Descrição condicional baseada na paginação
+            if (needsPagination) {
+                embed.setDescription(`**${uniqueItems.length} itens encontrados**\n` +
+                    `Página ${page}/${totalPages}\n\n` +
+                    'Selecione um item ou navegue entre as páginas:');
+            } else {
+                embed.setDescription(`**${uniqueItems.length} itens encontrados**\n\n` +
+                    'Selecione um item:');
+            }
+
             const components = [];
 
-            // Create item select menu if there are items
+            // Create item select menu (limitado a 25 itens por limitação do Discord)
             if (currentItems.length > 0) {
-                // Limitar para 25 itens no select menu (limite do Discord)
-                const itemsForSelect = currentItems.slice(0, 25);
+                const itemsForSelect = currentItems.slice(0, 10); // Discord limit
 
                 const selectOptions = itemsForSelect.map(item => ({
                     label: item.name.length > 100 ? item.name.substring(0, 97) + '...' : item.name,
@@ -327,57 +336,69 @@ class CartService {
                     .addOptions(selectOptions);
                 components.push(new ActionRowBuilder().addComponents(selectMenu));
 
-                // Se há mais itens que o limite, adicionar aviso
-                if (currentItems.length > 25) {
+                // Aviso se há mais itens que o limite do select menu
+                if (currentItems.length > 10) {
                     embed.addFields([{
                         name: 'ℹ️ Nota',
-                        value: `Mostrando os primeiros 25 itens desta página. Use os botões de navegação para ver mais itens.`,
+                        value: `Mostrando os primeiros 25 itens desta página. Use os botões de navegação para ver mais.`,
                         inline: false
                     }]);
                 }
             }
 
-            // Add navigation and search buttons
-            const navButtons = [];
-            if (page > 1) {
+            // CORREÇÃO: Botões de navegação APENAS se precisar de paginação
+            if (needsPagination && totalPages > 1) {
+                // Botão "Página anterior"
+                if (page > 1) {
+                    navButtons.push(
+                        new ButtonBuilder()
+                            .setCustomId(`searchpage_${cartId}_${page - 1}_${Buffer.from(JSON.stringify({ category, query: searchQuery })).toString('base64')}`)
+                            .setLabel('◀️ Anterior')
+                            .setStyle(ButtonStyle.Secondary)
+                    );
+                }
+                // Botão de pesquisa (sempre presente)
                 navButtons.push(
                     new ButtonBuilder()
-                        .setCustomId(`items_page_${cartId}_${category}_${page - 1}`)
-                        .setLabel('◀️ Anterior')
-                        .setStyle(ButtonStyle.Secondary)
+                        .setCustomId(`search_category_${cartId}_${category}`)
+                        .setLabel('🔍 Pesquisar')
+                        .setStyle(ButtonStyle.Primary)
                 );
-                console.log('sendItemsEmbed - search button customId:', `search_category_${cartId}_${category}`);
-            }
 
-            // Add search button
-            navButtons.push(
-                new ButtonBuilder()
-                    .setCustomId(`search_category_${cartId}_${category}`) // Aqui deve usar a categoria correta
-                    .setLabel('🔍 Pesquisar')
-                    .setStyle(ButtonStyle.Primary)
-            );
+                // Botão "Próxima página"
+                if (page < totalPages) {
+                    navButtons.push(
+                        new ButtonBuilder()
+                            .setCustomId(`items_page_${cartId}_${category}_${page + 1}`)
+                            .setLabel('Próxima ▶️')
+                            .setStyle(ButtonStyle.Secondary)
+                    );
+                }
 
-            // Add categories button
-            navButtons.push(
-                new ButtonBuilder()
-                    .setCustomId(`add_item_${cartId}`)
-                    .setLabel('🏷️ Categorias')
-                    .setStyle(ButtonStyle.Secondary)
-            );
-
-            if (page < totalPages) {
-                navButtons.push(
-                    new ButtonBuilder()
-                        .setCustomId(`items_page_${cartId}_${category}_${page + 1}`)
-                        .setLabel('Próxima ▶️')
-                        .setStyle(ButtonStyle.Secondary)
-                );
-            }
-
-            if (navButtons.length > 0) {
                 components.push(new ActionRowBuilder().addComponents(navButtons));
+            } else {
+                // Se não precisa de paginação, mostrar apenas botão de pesquisa
+                const searchButton = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId(`search_category_${cartId}_${category}`)
+                            .setLabel('🔍 Pesquisar')
+                            .setStyle(ButtonStyle.Primary)
+                    );
+                components.push(searchButton);
             }
 
+            // Botão de voltar às categorias (sempre presente)
+            const backButton = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId(`add_item_${cartId}`)
+                        .setLabel('🏷️ Voltar às Categorias')
+                        .setStyle(ButtonStyle.Secondary)
+                );
+            components.push(backButton);
+
+            // Send or edit message
             const messages = await channel.messages.fetch({ limit: 1 });
             const lastMessage = messages.first();
 
@@ -475,9 +496,11 @@ class CartService {
         }
     }
 
-    static async handleSearchInCategory(channel, cartId, category, searchQuery) {
+    // Em services/cartService.js, método handleSearchInCategory
+    // Em services/cartService.js, altere a assinatura do método:
+    static async handleSearchInCategory(channel, cartId, category, searchQuery, page = 1) {
         try {
-            console.log('handleSearchInCategory - category:', category, 'searchQuery:', searchQuery); // DEBUG
+            console.log('handleSearchInCategory - category:', category, 'searchQuery:', searchQuery, 'page:', page);
 
             // Load catalog
             let catalog = [];
@@ -489,7 +512,6 @@ class CartService {
             const query = searchQuery.toLowerCase();
 
             // Filter items by category and search query
-            // Filter items by category and search query
             const allItems = catalog.filter(item => {
                 let matchesCategory = false;
 
@@ -498,12 +520,10 @@ class CartService {
                 } else if (category === 'CHROMA_BUNDLE') {
                     matchesCategory = item.subInventoryType === 'CHROMA_BUNDLE';
                 } else if (category === 'CHAMPION_SKIN') {
-                    // Para skins, filtrar por inventoryType e excluir chromas
                     matchesCategory = item.inventoryType === 'CHAMPION_SKIN' &&
                         item.subInventoryType !== 'RECOLOR' &&
                         item.subInventoryType !== 'CHROMA_BUNDLE';
                 } else {
-                    // Para outras categorias
                     matchesCategory = item.inventoryType === category;
                 }
 
@@ -513,6 +533,7 @@ class CartService {
 
                 return matchesCategory && matchesSearch;
             });
+
             // Remove duplicates based on name
             const uniqueItems = [];
             const seenNames = new Set();
@@ -549,64 +570,122 @@ class CartService {
                 });
             }
 
-            // Create embed
+            // CORREÇÃO: Implementar paginação se mais de 10 itens
+            const needsPagination = uniqueItems.length > 10;
+            const itemsPerPage = 10;
+            const totalPages = needsPagination ? Math.ceil(uniqueItems.length / itemsPerPage) : 1;
+            const startIndex = needsPagination ? (page - 1) * itemsPerPage : 0;
+            const endIndex = needsPagination ? startIndex + itemsPerPage : uniqueItems.length;
+            const currentPageItems = uniqueItems.slice(startIndex, endIndex);
+
+            // Mostrar itens da página atual na lista
             let itemsList = '';
-            uniqueItems.slice(0, 10).forEach((item, index) => {
-                itemsList += `**${index + 1}.** ${item.name}\n`;
-                itemsList += `💰 ${item.price.toLocaleString()} RP - ${(item.price * 0.01).toFixed(2)}€\n`;
-                itemsList += '\n';
+            currentPageItems.forEach((item, index) => {
+                const globalIndex = startIndex + index + 1;
+                itemsList += `**${globalIndex}.** ${item.name}\n`;
+                itemsList += `💰 ${item.price.toLocaleString()} RP - ${(item.price * 0.01).toFixed(2)}€\n\n`;
             });
 
-            if (uniqueItems.length > 10) {
-                itemsList += `... e mais ${uniqueItems.length - 10} itens`;
+            if (needsPagination && page < totalPages) {
+                const remainingItems = uniqueItems.length - endIndex;
+                itemsList += `... e mais ${remainingItems} itens\n\n`;
+                itemsList += `💡 *Use os botões de navegação para ver mais*`;
             }
 
+            // Create embed
             const embed = new EmbedBuilder()
                 .setTitle('🔍 Resultados da Pesquisa na Categoria')
-                .setDescription(`**${uniqueItems.length} itens encontrados para:** ${searchQuery}\n` +
-                    `**Categoria:** ${this.getCategoryName(category)}\n\n` +
-                    (itemsList || 'Nenhum item encontrado'))
                 .setColor('#5865f2')
                 .setTimestamp();
 
-            // Create item select menu (limit to 25 items)
-            const selectOptions = uniqueItems.slice(0, 25).map(item => ({
-                label: item.name.length > 100 ? item.name.substring(0, 97) + '...' : item.name,
-                description: `${item.champion ? `${item.champion} - ` : ''}${item.price.toLocaleString()} RP (${(item.price * 0.01).toFixed(2)}€)`,
-                value: item.id.toString()
-            }));
-
-            const selectMenu = new StringSelectMenuBuilder()
-                .setCustomId(`search_result_select_${cartId}`)
-                .setPlaceholder('Selecione uma skin...')
-                .addOptions(selectOptions);
-
-            const row1 = new ActionRowBuilder().addComponents(selectMenu);
-
-            const row2 = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setCustomId(`add_item_${cartId}`)
-                        .setLabel('🏷️ Categorias')
-                        .setStyle(ButtonStyle.Primary),
-                    new ButtonBuilder()
-                        .setCustomId(`search_category_${cartId}_${category}`)
-                        .setLabel('🔍 Nova Pesquisa')
-                        .setStyle(ButtonStyle.Secondary)
-                );
-
-            if (uniqueItems.length > 25) {
-                embed.addFields([{
-                    name: '⚠️ Muitos Resultados',
-                    value: `Mostrando as primeiras 25 de ${uniqueItems.length} skins.\nTente ser mais específico na pesquisa.`,
-                    inline: false
-                }]);
+            // CORREÇÃO: Descrição com informação de paginação
+            if (needsPagination) {
+                embed.setDescription(`**${uniqueItems.length} itens encontrados para:** ${searchQuery}\n` +
+                    `**Categoria:** ${this.getCategoryName(category)}\n` +
+                    `**Página:** ${page}/${totalPages}\n\n` +
+                    (itemsList || 'Nenhum item encontrado'));
+            } else {
+                embed.setDescription(`**${uniqueItems.length} itens encontrados para:** ${searchQuery}\n` +
+                    `**Categoria:** ${this.getCategoryName(category)}\n\n` +
+                    (itemsList || 'Nenhum item encontrado'));
             }
 
-            await channel.send({
-                embeds: [embed],
-                components: [row1, row2]
-            });
+            const components = [];
+
+            // Create item select menu para os itens da página atual (limit to 25 items do Discord)
+            if (currentPageItems.length > 0) {
+                const selectOptions = currentPageItems.slice(0, 25).map(item => ({
+                    label: item.name.length > 100 ? item.name.substring(0, 97) + '...' : item.name,
+                    description: `${item.champion ? `${item.champion} - ` : ''}${item.price.toLocaleString()} RP (${(item.price * 0.01).toFixed(2)}€)`,
+                    value: item.id.toString()
+                }));
+
+                const selectMenu = new StringSelectMenuBuilder()
+                    .setCustomId(`search_result_select_${cartId}`)
+                    .setPlaceholder('Selecione uma skin...')
+                    .addOptions(selectOptions);
+
+                components.push(new ActionRowBuilder().addComponents(selectMenu));
+            }
+
+            // CORREÇÃO: Botões de navegação com paginação
+            // Em services/cartService.js, no método handleSearchInCategory, na parte dos botões:
+            const navButtons = [];
+
+            if (needsPagination && totalPages > 1) {
+                // Botão "Página anterior"
+                if (page > 1) {
+                    navButtons.push(
+                        new ButtonBuilder()
+                            .setCustomId(`search_result_page_${cartId}_${category}_${page - 1}_${encodeURIComponent(searchQuery)}`)
+                            .setLabel('◀️ Anterior')
+                            .setStyle(ButtonStyle.Secondary)
+                    );
+                }
+
+                // Botão "Próxima página"
+                if (page < totalPages) {
+                    navButtons.push(
+                        new ButtonBuilder()
+                            .setCustomId(`search_result_page_${cartId}_${category}_${page + 1}_${encodeURIComponent(searchQuery)}`)
+                            .setLabel('Próxima ▶️')
+                            .setStyle(ButtonStyle.Secondary)
+                    );
+                }
+            }
+
+            // Botões sempre presentes
+            navButtons.push(
+                new ButtonBuilder()
+                    .setCustomId(`search_category_${cartId}_${category}`)
+                    .setLabel('🔍 Nova Pesquisa')
+                    .setStyle(ButtonStyle.Primary)
+            );
+
+            navButtons.push(
+                new ButtonBuilder()
+                    .setCustomId(`add_item_${cartId}`)
+                    .setLabel('🏷️ Categorias')
+                    .setStyle(ButtonStyle.Secondary)
+            );
+
+            components.push(new ActionRowBuilder().addComponents(navButtons));
+
+            // Editar mensagem existente ou enviar nova
+            const messages = await channel.messages.fetch({ limit: 1 });
+            const lastMessage = messages.first();
+
+            if (lastMessage && lastMessage.author.id === channel.client.user.id && lastMessage.embeds.length > 0) {
+                await lastMessage.edit({
+                    embeds: [embed],
+                    components: components
+                });
+            } else {
+                await channel.send({
+                    embeds: [embed],
+                    components: components
+                });
+            }
 
         } catch (error) {
             console.error('Error handling search in category:', error);

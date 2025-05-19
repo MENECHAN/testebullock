@@ -81,7 +81,7 @@ module.exports = {
                 choices = Object.keys(PriceManager.config.defaultPrices[classSystem]).map(name => ({ name: name, value: name }));
             }
             // Filter choices based on user input
-            const filtered = choices.filter(choice => choice.name.toLowerCase().startsWith(focusedOption.value.toLowerCase())).slice(0, 25);
+            const filtered = choices.filter(choice => choice.name.toLowerCase().startsWith(focusedOption.value.toLowerCase())).slice(0, 10);
             await interaction.respond(filtered);
         }
     },
