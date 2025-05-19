@@ -1,11 +1,93 @@
-const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
-const config = require('../../config.json');
-const fs = require('fs');
+const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, PermissionFlagsBits } = require('discord.js');
+const PriceManager = require('../../PriceManager'); // Adjust path if PriceManager.js is not two levels up
+const fs = require('fs'); // For loading analysis for choices, if desired
+const path = require('path');
+
+// Path to your inventory analysis to populate choices for class names
+const INVENTORY_ANALYSIS_PATH = path.resolve(__dirname, '../../inventory-analysis-1747600948977.json'); // Adjust path
+
+let inventoryAnalysisData = null;
+try {
+    if (fs.existsSync(INVENTORY_ANALYSIS_PATH)) {
+        inventoryAnalysisData = JSON.parse(fs.readFileSync(INVENTORY_ANALYSIS_PATH, 'utf8'));
+    } else {
+        console.warn(`Inventory analysis file not found at ${INVENTORY_ANALYSIS_PATH} for price-manage command.`);
+    }
+} catch (e) {
+    console.error("Error loading inventory analysis for price-manage command:", e);
+}
+
 
 module.exports = {
+    data: new SlashCommandBuilder()
+        .setName('price-manage')
+        .setDescription('Gerencia os preços dos itens e classes (Admin).')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator) // Ensure only admins can use
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('view')
+                .setDescription('Visualiza a configuração de preços atual.'))
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('set-item')
+                .setDescription('Define o preço de um item específico (override).')
+                .addStringOption(option => option.setName('itemkey').setDescription('ID ou chave única do item (ex: ID do item no catalog.json).').setRequired(true))
+                .addIntegerOption(option => option.setName('price').setDescription(`Preço em ${PriceManager.currency}. Deixe em branco ou 0 para remover override.`).setRequired(true)))
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('set-class')
+                .setDescription('Define o preço padrão para uma classe de itens.')
+                .addStringOption(option =>
+                    option.setName('class_system')
+                        .setDescription('O sistema de classificação (ex: inventoryTypes).')
+                        .setRequired(true)
+                        .addChoices(
+                            { name: 'Inventory Types (Tipos de Inventário)', value: 'inventoryTypes' },
+                            { name: 'Item Categories (Categorias de Item)', value: 'itemCategories' },
+                            { name: 'SubInventory Types (Subtipos de Inventário)', value: 'subInventoryTypes' }
+                        ))
+                .addStringOption(option =>
+                    option.setName('class_name')
+                        .setDescription('Nome da classe (ex: CHAMPION, EPIC_SKIN). Use /price-manage list-classes para ver nomes.')
+                        .setRequired(true)
+                        .setAutocomplete(true)) // Enable autocomplete
+                .addIntegerOption(option => option.setName('price').setDescription(`Preço em ${PriceManager.currency}. Deixe em branco ou 0 para remover.`).setRequired(true))),
+        // Optional: Command to list available class names based on analysis or current config
+        // .addSubcommand(subcommand =>
+        //     subcommand
+        //         .setName('list-classes')
+        //         .setDescription('Lista os nomes de classes disponíveis para precificação.')
+        //         .addStringOption(option =>
+        //             option.setName('class_system')
+        //                 .setDescription('O sistema de classificação para listar nomes.')
+        //                 .setRequired(true)
+        //                 .addChoices(
+        //                     { name: 'Inventory Types', value: 'inventoryTypes' },
+        //                     { name: 'Item Categories', value: 'itemCategories' },
+        //                     { name: 'SubInventory Types', value: 'subInventoryTypes' }
+        //                 ))),
+
+
+    async autocomplete(interaction) {
+        const focusedOption = interaction.options.getFocused(true);
+        let choices = [];
+
+        if (focusedOption.name === 'class_name') {
+            const classSystem = interaction.options.getString('class_system');
+            if (classSystem && inventoryAnalysisData && inventoryAnalysisData[classSystem]) {
+                choices = Object.keys(inventoryAnalysisData[classSystem]).map(name => ({ name: name, value: name }));
+            } else if (classSystem && PriceManager.config.defaultPrices[classSystem]) {
+                // Fallback to keys already in price-config if analysis is not loaded
+                choices = Object.keys(PriceManager.config.defaultPrices[classSystem]).map(name => ({ name: name, value: name }));
+            }
+            // Filter choices based on user input
+            const filtered = choices.filter(choice => choice.name.toLowerCase().startsWith(focusedOption.value.toLowerCase())).slice(0, 25);
+            await interaction.respond(filtered);
+        }
+    },
+
     async execute(interaction) {
-        // Check if user has admin role
-        if (!interaction.member.roles.cache.has(config.adminRoleId)) {
+        if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
             return await interaction.reply({
                 content: '❌ Você não tem permissão para usar este comando.',
                 ephemeral: true
@@ -14,320 +96,98 @@ module.exports = {
 
         const subcommand = interaction.options.getSubcommand();
 
-        switch (subcommand) {
-            case 'prices':
-                await handlePricesMenu(interaction);
-                break;
-            case 'edit-item':
-                await handleEditItemSearch(interaction);
-                break;
-            case 'reset-prices':
-                await handleResetPrices(interaction);
-                break;
-            case 'export-config':
-                await handleExportConfig(interaction);
-                break;
-            case 'import-config':
-                await handleImportConfig(interaction);
-                break;
+        try {
+            if (subcommand === 'view') {
+                const currentPrices = PriceManager.getAllPriceConfigs();
+                const embed = new EmbedBuilder()
+                    .setTitle(`💰 Configuração de Preços Atual (${PriceManager.currency})`)
+                    .setColor('#0099ff')
+                    .setTimestamp();
+
+                embed.addFields({ name: 'Moeda Padrão', value: currentPrices.currency, inline: true });
+                embed.addFields({ name: 'Preço Fallback', value: String(currentPrices.fallbackPrice), inline: true });
+
+                if (Object.keys(currentPrices.defaultPrices.inventoryTypes).length > 0) {
+                    embed.addFields({ name: 'Tipos de Inventário (Padrão)', value: "```json\n" + JSON.stringify(currentPrices.defaultPrices.inventoryTypes, null, 2) + "\n```" });
+                }
+                if (Object.keys(currentPrices.defaultPrices.itemCategories).length > 0) {
+                    embed.addFields({ name: 'Categorias de Item (Padrão)', value: "```json\n" + JSON.stringify(currentPrices.defaultPrices.itemCategories, null, 2) + "\n```" });
+                }
+                if (Object.keys(currentPrices.defaultPrices.subInventoryTypes).length > 0) {
+                    embed.addFields({ name: 'Subtipos de Inventário (Padrão)', value: "```json\n" + JSON.stringify(currentPrices.defaultPrices.subInventoryTypes, null, 2) + "\n```" });
+                }
+                if (Object.keys(currentPrices.itemOverrides).length > 0) {
+                    const overrideChunks = [];
+                    const overrideJson = JSON.stringify(currentPrices.itemOverrides, null, 2);
+                    for (let i = 0; i < overrideJson.length; i += 1000) { // Discord field value limit
+                        overrideChunks.push(overrideJson.substring(i, Math.min(overrideJson.length, i + 1000)));
+                    }
+                    overrideChunks.forEach((chunk, index) => {
+                         embed.addFields({ name: `Overrides de Item Específico ${overrideChunks.length > 1 ? `(Parte ${index + 1})` : ''}`, value: "```json\n" + chunk + "\n```" });
+                    });
+                } else {
+                     embed.addFields({ name: 'Overrides de Item Específico', value: "Nenhum override definido."});
+                }
+
+                await interaction.reply({ embeds: [embed], ephemeral: true });
+
+            } else if (subcommand === 'set-item') {
+                const itemKey = interaction.options.getString('itemkey');
+                const priceInput = interaction.options.getInteger('price');
+                const price = (priceInput === 0) ? null : priceInput; // Treat 0 as removal
+
+                if (price !== null && (isNaN(price) || price < 0)) {
+                     return await interaction.reply({ content: '❌ Preço inválido. Deve ser um número não negativo.', ephemeral: true });
+                }
+
+                const success = PriceManager.setItemPrice(itemKey, price);
+                if (success) {
+                    await interaction.reply({ content: `✅ Preço para o item '${itemKey}' ${price === null ? 'removido' : `definido para ${price} ${PriceManager.currency}`}.`, ephemeral: true });
+                } else {
+                    await interaction.reply({ content: '❌ Falha ao definir o preço do item. Verifique os logs.', ephemeral: true });
+                }
+
+
+            } else if (subcommand === 'set-class') {
+                const classSystem = interaction.options.getString('class_system');
+                const className = interaction.options.getString('class_name');
+                const priceInput = interaction.options.getInteger('price');
+                const price = (priceInput === 0) ? null : priceInput; // Treat 0 as removal for consistency
+                
+                if (price !== null && (isNaN(price) || price < 0)) {
+                     return await interaction.reply({ content: '❌ Preço inválido. Deve ser um número não negativo.', ephemeral: true });
+                }
+
+                const success = PriceManager.setClassPrice(classSystem, className, price);
+                 if (success) {
+                    await interaction.reply({ content: `✅ Preço para a classe '<span class="math-inline">\{classSystem\}\.</span>{className}' ${price === null ? 'removido' : `definido para ${price} ${PriceManager.currency}`}.`, ephemeral: true });
+                } else {
+                    await interaction.reply({ content: '❌ Falha ao definir o preço da classe. Verifique os logs.', ephemeral: true });
+                }
+            }
+            // } else if (subcommand === 'list-classes') { // Optional subcommand
+            //     const classSystem = interaction.options.getString('class_system');
+            //     let names = [];
+            //     if (inventoryAnalysisData && inventoryAnalysisData[classSystem]) {
+            //         names = Object.keys(inventoryAnalysisData[classSystem]);
+            //     } else if (PriceManager.config.defaultPrices[classSystem]) {
+            //         names = Object.keys(PriceManager.config.defaultPrices[classSystem]);
+            //     }
+
+            //     if (names.length > 0) {
+            //         const embed = new EmbedBuilder()
+            //             .setTitle(`Nomes de Classe para ${classSystem}`)
+            //             .setDescription("```\n" + names.join('\n') + "\n```")
+            //             .setColor('#0099ff');
+            //         await interaction.reply({ embeds: [embed], ephemeral: true });
+            //     } else {
+            //         await interaction.reply({ content: `Nenhuma classe encontrada para o sistema '${classSystem}' na análise ou configuração.`, ephemeral: true });
+            //     }
+            // }
+
+        } catch (error) {
+            console.error(`Error executing /price-manage ${subcommand}:`, error);
+            await interaction.reply({ content: '❌ Ocorreu um erro ao processar o comando.', ephemeral: true });
         }
     }
 };
-
-async function handlePricesMenu(interaction) {
-    try {
-        // Carregar configuração atual
-        let priceConfig = getDefaultPriceConfig();
-        if (fs.existsSync('./price-config.json')) {
-            priceConfig = JSON.parse(fs.readFileSync('./price-config.json', 'utf8'));
-        }
-
-        // Criar embed com preços atuais
-        const embed = new EmbedBuilder()
-            .setTitle('💰 Gerenciamento de Preços')
-            .setDescription('Configure os preços por categoria e raridade')
-            .setColor('#faa61a')
-            .setTimestamp();
-
-        // Adicionar campos com preços atuais
-        const skinPrices = priceConfig.categories.CHAMPION_SKIN;
-        embed.addFields([
-            {
-                name: '🎨 Skins por Raridade',
-                value: Object.entries(skinPrices)
-                    .map(([rarity, price]) => `**${rarity}:** ${price} RP`)
-                    .join('\n'),
-                inline: true
-            },
-            {
-                name: '📦 Modificadores',
-                value: Object.entries(priceConfig.modifiers)
-                    .map(([type, mult]) => `**${type}:** x${mult}`)
-                    .join('\n'),
-                inline: true
-            },
-            {
-                name: '🏷️ Categorias Especiais',
-                value: `**Bundles:** x${priceConfig.categories.BUNDLES.multiplier}\n` +
-                       `**Hextech:** x${priceConfig.categories.HEXTECH.multiplier}\n` +
-                       `**Prestige:** ${priceConfig.categories.PRESTIGE.price} RP`,
-                inline: true
-            }
-        ]);
-
-        // Criar botões para cada categoria
-        const row1 = new ActionRowBuilder()
-            .addComponents(
-                new ButtonBuilder()
-                    .setCustomId('edit_price_ultimate')
-                    .setLabel(`Ultimate (${skinPrices.Ultimate} RP)`)
-                    .setStyle(ButtonStyle.Primary),
-                new ButtonBuilder()
-                    .setCustomId('edit_price_legendary')
-                    .setLabel(`Legendary (${skinPrices.Legendary} RP)`)
-                    .setStyle(ButtonStyle.Primary),
-                new ButtonBuilder()
-                    .setCustomId('edit_price_epic')
-                    .setLabel(`Epic (${skinPrices.Epic} RP)`)
-                    .setStyle(ButtonStyle.Primary)
-            );
-
-        const row2 = new ActionRowBuilder()
-            .addComponents(
-                new ButtonBuilder()
-                    .setCustomId('edit_price_rare')
-                    .setLabel(`Rare (${skinPrices.Rare} RP)`)
-                    .setStyle(ButtonStyle.Secondary),
-                new ButtonBuilder()
-                    .setCustomId('edit_price_common')
-                    .setLabel(`Common (${skinPrices.Common} RP)`)
-                    .setStyle(ButtonStyle.Secondary),
-                new ButtonBuilder()
-                    .setCustomId('edit_price_chroma')
-                    .setLabel(`Chroma (${skinPrices.Chroma} RP)`)
-                    .setStyle(ButtonStyle.Secondary)
-            );
-
-        const row3 = new ActionRowBuilder()
-            .addComponents(
-                new ButtonBuilder()
-                    .setCustomId('edit_price_bundles')
-                    .setLabel(`Bundles (x${priceConfig.categories.BUNDLES.multiplier})`)
-                    .setStyle(ButtonStyle.Success),
-                new ButtonBuilder()
-                    .setCustomId('edit_price_hextech')
-                    .setLabel(`Hextech (x${priceConfig.categories.HEXTECH.multiplier})`)
-                    .setStyle(ButtonStyle.Success),
-                new ButtonBuilder()
-                    .setCustomId('edit_price_prestige')
-                    .setLabel(`Prestige (${priceConfig.categories.PRESTIGE.price} RP)`)
-                    .setStyle(ButtonStyle.Success)
-            );
-
-        const row4 = new ActionRowBuilder()
-            .addComponents(
-                new ButtonBuilder()
-                    .setCustomId('edit_individual_item')
-                    .setLabel('🔍 Editar Item Individual')
-                    .setStyle(ButtonStyle.Danger),
-                new ButtonBuilder()
-                    .setCustomId('reset_all_prices')
-                    .setLabel('🔄 Resetar Padrão')
-                    .setStyle(ButtonStyle.Danger)
-            );
-
-        await interaction.reply({
-            embeds: [embed],
-            components: [row1, row2, row3, row4],
-            ephemeral: true
-        });
-
-    } catch (error) {
-        console.error('Error showing prices menu:', error);
-        await interaction.reply({
-            content: '❌ Erro ao mostrar menu de preços.',
-            ephemeral: true
-        });
-    }
-}
-
-async function handleEditItemSearch(interaction) {
-    try {
-        // Carregar catálogo
-        if (!fs.existsSync('./catalog.json')) {
-            return await interaction.reply({
-                content: '❌ Catálogo não encontrado.',
-                ephemeral: true
-            });
-        }
-
-        const catalog = JSON.parse(fs.readFileSync('./catalog.json', 'utf8'));
-        
-        if (catalog.length === 0) {
-            return await interaction.reply({
-                content: '❌ Catálogo vazio.',
-                ephemeral: true
-            });
-        }
-
-        // Criar embed de busca
-        const embed = new EmbedBuilder()
-            .setTitle('🔍 Buscar Item para Editar')
-            .setDescription('Digite o nome do campeão ou da skin para buscar:')
-            .setColor('#5865f2')
-            .setTimestamp();
-
-        const row = new ActionRowBuilder()
-            .addComponents(
-                new ButtonBuilder()
-                    .setCustomId('search_item_to_edit')
-                    .setLabel('🔍 Buscar Item')
-                    .setStyle(ButtonStyle.Primary)
-            );
-
-        await interaction.reply({
-            embeds: [embed],
-            components: [row],
-            ephemeral: true
-        });
-
-    } catch (error) {
-        console.error('Error in edit item search:', error);
-        await interaction.reply({
-            content: '❌ Erro ao iniciar busca de item.',
-            ephemeral: true
-        });
-    }
-}
-
-async function handleResetPrices(interaction) {
-    try {
-        const defaultConfig = getDefaultPriceConfig();
-        fs.writeFileSync('./price-config.json', JSON.stringify(defaultConfig, null, 2));
-
-        const embed = new EmbedBuilder()
-            .setTitle('✅ Preços Resetados')
-            .setDescription('Configuração de preços foi resetada para os valores padrão.')
-            .setColor('#57f287')
-            .setTimestamp();
-
-        await interaction.reply({ embeds: [embed], ephemeral: true });
-    } catch (error) {
-        console.error('Error resetting prices:', error);
-        await interaction.reply({
-            content: '❌ Erro ao resetar preços.',
-            ephemeral: true
-        });
-    }
-}
-
-async function handleExportConfig(interaction) {
-    try {
-        if (!fs.existsSync('./price-config.json')) {
-            return await interaction.reply({
-                content: '❌ Configuração de preços não encontrada.',
-                ephemeral: true
-            });
-        }
-
-        const config = fs.readFileSync('./price-config.json', 'utf8');
-        const buffer = Buffer.from(config, 'utf8');
-
-        await interaction.reply({
-            content: '✅ Aqui está sua configuração de preços:',
-            files: [{
-                attachment: buffer,
-                name: 'price-config-export.json'
-            }],
-            ephemeral: true
-        });
-    } catch (error) {
-        console.error('Error exporting config:', error);
-        await interaction.reply({
-            content: '❌ Erro ao exportar configuração.',
-            ephemeral: true
-        });
-    }
-}
-
-async function handleImportConfig(interaction) {
-    // Criar modal para importar configuração
-    const modal = new ModalBuilder()
-        .setCustomId('import_config_modal')
-        .setTitle('Importar Configuração de Preços');
-
-    const configInput = new TextInputBuilder()
-        .setCustomId('config_json')
-        .setLabel('Cole aqui o JSON da configuração')
-        .setStyle(TextInputStyle.Paragraph)
-        .setPlaceholder('{"categories": {...}}')
-        .setRequired(true);
-
-    const firstActionRow = new ActionRowBuilder().addComponents(configInput);
-    modal.addComponents(firstActionRow);
-
-    await interaction.showModal(modal);
-}
-
-// Funções utilitárias
-
-function getDefaultPriceConfig() {
-    return {
-        categories: {
-            CHAMPION_SKIN: {
-                Ultimate: 3250,
-                Legendary: 1820,
-                Epic: 1350,
-                Rare: 975,
-                Common: 520,
-                Chroma: 290,
-                Prestige: 2000,
-                Mythic: 10,
-                Hextech: 2200
-            },
-            CHAMPION: {
-                price: 790
-            },
-            BUNDLES: {
-                multiplier: 0.85
-            },
-            HEXTECH: {
-                multiplier: 1.2
-            },
-            PRESTIGE: {
-                price: 2000
-            },
-            MYTHIC: {
-                price: 10
-            }
-        },
-        modifiers: {
-            prestige: 1.5,
-            mythic: 2.0,
-            limited: 1.3,
-            legacy: 1.1,
-            chroma: 0.5
-        }
-    };
-}
-
-// Handlers para botões de preço
-async function handlePriceEdit(interaction, category) {
-    const modal = new ModalBuilder()
-        .setCustomId(`price_edit_modal_${category}`)
-        .setTitle(`Editar Preço - ${category}`);
-
-    const priceInput = new TextInputBuilder()
-        .setCustomId('new_price')
-        .setLabel('Novo Preço (RP) ou Multiplicador')
-        .setStyle(TextInputStyle.Short)
-        .setPlaceholder('Ex: 1820 ou 0.85')
-        .setRequired(true);
-
-    const firstActionRow = new ActionRowBuilder().addComponents(priceInput);
-    modal.addComponents(firstActionRow);
-
-    await interaction.showModal(modal);
-}
-
-module.exports.handlePriceEdit = handlePriceEdit;
