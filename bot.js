@@ -11,8 +11,8 @@ const friendshipLogsCommand = require('./commands/slash/friendship-logs');
 // Import auto-updater
 const CatalogAutoUpdater = require('./CatalogAutoUpdater');
 
-// ⭐ IMPORT DO NOVO SERVIÇO DE NOTIFICAÇÃO
-const FriendshipNotificationService = require('./services/FriendshipNotificationService.js');
+// ⭐ CORREÇÃO DO IMPORT
+const FriendshipNotificationService = require('./services/FriendshipNotificationService');
 
 // Check if required files exist
 const requiredFiles = [
@@ -61,7 +61,7 @@ const client = new Client({
 
 // Initialize services
 let catalogUpdater;
-let friendshipNotificationService; // ⭐ NOVA VARIÁVEL
+let friendshipNotificationService;
 
 // Bot ready event
 client.once('ready', async () => {
@@ -84,8 +84,9 @@ client.once('ready', async () => {
 
     // ⭐ INICIALIZAR SERVIÇO DE NOTIFICAÇÃO DE AMIZADES
     friendshipNotificationService = new FriendshipNotificationService(client);
-    friendshipNotificationService.start();
+    await friendshipNotificationService.start();
     console.log('🔔 Friendship notification service initialized!');
+    global.friendshipNotificationService = friendshipNotificationService;
 
     // Clean up old backups every day
     setInterval(() => {
@@ -236,6 +237,10 @@ client.on('interactionCreate', async (interaction) => {
         if (interaction.isChatInputCommand()) {
             // Handle slash commands
             switch (interaction.commandName) {
+                case 'friendship-admin':
+                    const friendshipAdminCommand = require('./commands/slash/friendship-admin');
+                    await friendshipAdminCommand.execute(interaction);
+                    break;
                 case 'friendship-logs':
                     await friendshipLogsCommand.execute(interaction);
                     break;
@@ -251,7 +256,6 @@ client.on('interactionCreate', async (interaction) => {
                 case 'catalog-manage':
                     await catalogUpdater.handleCatalogCommand(interaction);
                     break;
-                // ⭐ NOVO COMANDO PARA NOTIFICAÇÕES
                 case 'friendship-notifications':
                     await handleFriendshipNotificationCommand(interaction);
                     break;
@@ -285,7 +289,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 });
 
-// ⭐ HANDLER PARA COMANDOS DE NOTIFICAÇÃO
+// ⭐ HANDLERS PARA COMANDOS DE NOTIFICAÇÃO DE AMIZADES
 async function handleFriendshipNotificationCommand(interaction) {
     // Check if user has admin role
     if (!interaction.member.roles.cache.has(config.adminRoleId)) {
@@ -328,15 +332,19 @@ async function handleNotificationStats(interaction) {
         const { EmbedBuilder } = require('discord.js');
         const embed = new EmbedBuilder()
             .setTitle('📊 Estatísticas do Serviço de Notificação')
+            .setDescription(`Serviço de notificações de elegibilidade para presentes`)
             .addFields([
-                { name: '👥 Total de Amizades', value: stats.totalFriendships.toString(), inline: true },
+                { name: '👥 Total de Amizades', value: `${stats.totalFriendships} amizades`, inline: true },
                 { name: '✅ Amizades Elegíveis', value: `${stats.eligibleFriendships} (${stats.minDays}+ dias)`, inline: true },
-                { name: '🔔 Já Notificadas', value: stats.notifiedFriendships.toString(), inline: true },
-                { name: '⏳ Pendentes', value: stats.pendingNotifications.toString(), inline: true },
+                { name: '🔔 Já Notificadas', value: `${stats.notifiedFriendships}`, inline: true },
+                { name: '⏳ Pendentes', value: `${stats.pendingNotifications}`, inline: true },
                 { name: '🔄 Status do Serviço', value: stats.isRunning ? '🟢 Ativo' : '🔴 Inativo', inline: true },
-                { name: '⏰ Período Mínimo', value: `${stats.minDays} dias`, inline: true }
+                { name: '⏰ Período Mínimo', value: `${stats.minDays} dias`, inline: true },
+                { name: '🕐 Última Verificação', value: stats.lastCheck ? `<t:${Math.floor(new Date(stats.lastCheck).getTime() / 1000)}:R>` : 'N/A', inline: false }
             ])
-            .setColor('#5865f2')
+            .setColor(stats.isRunning ? '#57f287' : '#ed4245')
+            .setThumbnail(interaction.guild.iconURL())
+            .setFooter({ text: `Sistema PawStore | Admin: ${interaction.user.tag}` })
             .setTimestamp();
 
         await interaction.editReply({ embeds: [embed] });
@@ -353,21 +361,48 @@ async function handleManualCheck(interaction) {
     try {
         await interaction.deferReply({ ephemeral: true });
 
-        await interaction.editReply({
-            content: '🔄 Verificando amizades elegíveis...'
-        });
+        const { EmbedBuilder } = require('discord.js');
+        const initialEmbed = new EmbedBuilder()
+            .setTitle('🔄 Verificação Manual Iniciada')
+            .setDescription('Verificando amizades elegíveis para notificação...')
+            .setColor('#faa61a')
+            .setTimestamp();
 
+        await interaction.editReply({ embeds: [initialEmbed] });
+
+        // Executar verificação
         await friendshipNotificationService.checkEligibleFriendships();
 
-        await interaction.editReply({
-            content: '✅ Verificação concluída! Verifique os logs para detalhes.'
-        });
+        // Obter estatísticas atualizadas
+        const stats = await friendshipNotificationService.getStatistics();
+
+        const resultEmbed = new EmbedBuilder()
+            .setTitle('✅ Verificação Manual Concluída')
+            .setDescription('A verificação de amizades foi executada com sucesso!')
+            .addFields([
+                { name: '📊 Resultado', value: `${stats.pendingNotifications} notificações pendentes processadas`, inline: false },
+                { name: '🕐 Executado em', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true },
+                { name: '👨‍💼 Executado por', value: `${interaction.user}`, inline: true }
+            ])
+            .setColor('#57f287')
+            .setTimestamp();
+
+        await interaction.editReply({ embeds: [resultEmbed] });
 
     } catch (error) {
         console.error('Error running manual check:', error);
-        await interaction.editReply({
-            content: '❌ Erro ao executar verificação manual.'
-        });
+
+        const { EmbedBuilder } = require('discord.js');
+        const errorEmbed = new EmbedBuilder()
+            .setTitle('❌ Erro na Verificação')
+            .setDescription('Ocorreu um erro durante a verificação manual.')
+            .addFields([
+                { name: '🐛 Erro', value: error.message || 'Erro desconhecido', inline: false }
+            ])
+            .setColor('#ed4245')
+            .setTimestamp();
+
+        await interaction.editReply({ embeds: [errorEmbed] });
     }
 }
 
@@ -377,27 +412,44 @@ async function handleTestNotification(interaction) {
 
         const friendshipId = interaction.options.getInteger('friendship_id');
 
-        await interaction.editReply({
-            content: `🔄 Testando notificação para amizade ${friendshipId}...`
-        });
+        const { EmbedBuilder } = require('discord.js');
+        const testEmbed = new EmbedBuilder()
+            .setTitle('🧪 Testando Notificação')
+            .setDescription(`Enviando notificação de teste para amizade **${friendshipId}**...`)
+            .setColor('#faa61a')
+            .setTimestamp();
+
+        await interaction.editReply({ embeds: [testEmbed] });
 
         const success = await friendshipNotificationService.checkSpecificFriendship(friendshipId);
 
-        if (success) {
-            await interaction.editReply({
-                content: `✅ Notificação enviada com sucesso para amizade ${friendshipId}!`
-            });
-        } else {
-            await interaction.editReply({
-                content: `❌ Falha ao enviar notificação para amizade ${friendshipId}. Verifique se a amizade existe e é elegível.`
-            });
-        }
+        const resultEmbed = new EmbedBuilder()
+            .setTitle(success ? '✅ Teste Bem-sucedido' : '❌ Teste Falhado')
+            .setDescription(
+                success
+                    ? `Notificação enviada com sucesso para amizade **${friendshipId}**!`
+                    : `Falha ao enviar notificação para amizade **${friendshipId}**.\n\nPossíveis motivos:\n• Amizade não encontrada\n• Não elegível ainda\n• Já foi notificada\n• DMs desabilitadas`
+            )
+            .addFields([
+                { name: '🆔 Amizade testada', value: friendshipId.toString(), inline: true },
+                { name: '🕐 Testado em', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true }
+            ])
+            .setColor(success ? '#57f287' : '#ed4245')
+            .setTimestamp();
+
+        await interaction.editReply({ embeds: [resultEmbed] });
 
     } catch (error) {
         console.error('Error testing notification:', error);
-        await interaction.editReply({
-            content: '❌ Erro ao testar notificação.'
-        });
+
+        const { EmbedBuilder } = require('discord.js');
+        const errorEmbed = new EmbedBuilder()
+            .setTitle('❌ Erro no Teste')
+            .setDescription('Ocorreu um erro durante o teste de notificação.')
+            .setColor('#ed4245')
+            .setTimestamp();
+
+        await interaction.editReply({ embeds: [errorEmbed] });
     }
 }
 
@@ -405,29 +457,59 @@ async function handleResetNotifications(interaction) {
     try {
         await interaction.deferReply({ ephemeral: true });
 
-        await interaction.editReply({
-            content: '⚠️ **ATENÇÃO**: Esta ação irá resetar TODAS as notificações de amizade!\n\nDeseja continuar? Resposta automática em 10 segundos...'
-        });
+        const { EmbedBuilder } = require('discord.js');
+        const warningEmbed = new EmbedBuilder()
+            .setTitle('⚠️ ATENÇÃO - Reset de Notificações')
+            .setDescription(
+                '**Esta ação irá resetar TODAS as notificações de amizade!**\n\n' +
+                '🔄 Isso significa que todas as amizades elegíveis receberão notificações novamente na próxima verificação.\n\n' +
+                '⏰ **O reset será executado em 10 segundos...**\n' +
+                '❌ Esta ação não pode ser desfeita!'
+            )
+            .setColor('#ed4245')
+            .setTimestamp();
 
-        // Aguardar 10 segundos antes de executar
-        setTimeout(async () => {
-            try {
-                await friendshipNotificationService.resetNotifications();
-                await interaction.editReply({
-                    content: '✅ Todas as notificações foram resetadas!'
-                });
-            } catch (error) {
-                await interaction.editReply({
-                    content: '❌ Erro ao resetar notificações.'
-                });
-            }
-        }, 10000);
+        await interaction.editReply({ embeds: [warningEmbed] });
+
+        // Aguardar 10 segundos
+        await new Promise(resolve => setTimeout(resolve, 10000));
+
+        try {
+            const resetCount = await friendshipNotificationService.resetNotifications();
+
+            const successEmbed = new EmbedBuilder()
+                .setTitle('✅ Reset Concluído')
+                .setDescription(`**${resetCount} notificações foram resetadas com sucesso!**`)
+                .addFields([
+                    { name: '📊 Resetadas', value: `${resetCount} amizades`, inline: true },
+                    { name: '🕐 Resetado em', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true },
+                    { name: '👨‍💼 Executado por', value: `${interaction.user}`, inline: true }
+                ])
+                .setColor('#57f287')
+                .setTimestamp();
+
+            await interaction.editReply({ embeds: [successEmbed] });
+        } catch (resetError) {
+            const errorEmbed = new EmbedBuilder()
+                .setTitle('❌ Erro no Reset')
+                .setDescription('Ocorreu um erro durante o reset das notificações.')
+                .setColor('#ed4245')
+                .setTimestamp();
+
+            await interaction.editReply({ embeds: [errorEmbed] });
+        }
 
     } catch (error) {
         console.error('Error resetting notifications:', error);
-        await interaction.editReply({
-            content: '❌ Erro ao resetar notificações.'
-        });
+
+        const { EmbedBuilder } = require('discord.js');
+        const errorEmbed = new EmbedBuilder()
+            .setTitle('❌ Erro')
+            .setDescription('Erro ao processar reset de notificações.')
+            .setColor('#ed4245')
+            .setTimestamp();
+
+        await interaction.editReply({ embeds: [errorEmbed] });
     }
 }
 
@@ -444,12 +526,12 @@ process.on('uncaughtException', error => {
 // Graceful shutdown
 process.on('SIGINT', () => {
     console.log('🛑 Shutting down bot...');
-    
+
     // ⭐ PARAR SERVIÇOS ANTES DE FECHAR
     if (friendshipNotificationService) {
         friendshipNotificationService.stop();
     }
-    
+
     client.destroy();
     process.exit(0);
 });
