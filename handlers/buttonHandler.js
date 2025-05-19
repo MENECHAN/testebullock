@@ -18,6 +18,26 @@ module.exports = {
         const [action, ...params] = interaction.customId.split('_');
         console.log(`[DEBUG] Parsed action: ${action}, params:`, params);
 
+        if (action === 'select' && params[0] === 'account') {
+            // customId: select_account_ORDERID_ACCOUNTID
+            const orderId = params[1];
+            const accountId = params[2];
+
+            console.log(`[DEBUG ButtonHandler] Account selection via button: Order ${orderId}, Account ${accountId}`);
+
+            try {
+                const OrderService = require('../services/orderService');
+                await OrderService.processAccountSelection(interaction, orderId, accountId);
+            } catch (error) {
+                console.error('[ERROR ButtonHandler] Account selection error:', error);
+                await interaction.reply({
+                    content: '❌ Erro ao processar seleção de conta.',
+                    ephemeral: true
+                });
+            }
+            return;
+        }
+
         if (action === 'approve' && params[0] === 'order') {
             await OrderService.approveOrder(interaction, params[1]);
             return;
@@ -65,6 +85,11 @@ module.exports = {
 
         // Handlers do carrinho com dropdown
         switch (action) {
+            case 'close':
+                if (params[0] === 'account' && params[1] === 'ticket') {
+                    await handleCloseAccountTicket(interaction);
+                }
+                break;
             case 'open':
                 if (params[0] === 'cart') {
                     await handleOpenCart(interaction);
@@ -350,6 +375,10 @@ async function handleAddAccount(interaction) {
         embed.addFields(accountFields);
 
         // Create buttons for each account
+        // ⭐ CORREÇÃO: Botão Close ÚNICO no final
+        // No buttonHandler.js, função handleAddAccount
+
+        // Create buttons for each account
         const rows = [];
         let components = [];
 
@@ -371,12 +400,23 @@ async function handleAddAccount(interaction) {
             }
         }
 
+        // ⭐ ADICIONAR UM ÚNICO BOTÃO CLOSE NO FINAL
+        const closeButton = new ActionRowBuilder()
+            .addComponents(
+                new ButtonBuilder()
+                    .setCustomId('close_account_ticket')
+                    .setLabel('🔒 Fechar Canal')
+                    .setStyle(ButtonStyle.Danger)
+            );
+
+        rows.push(closeButton);
+
         await tempChannel.send({
             embeds: [embed],
             components: rows
         });
 
-        // Auto-delete channel after 10 minutes
+        // Auto-delete channel after 10 minutes (manter este código)
         setTimeout(async () => {
             try {
                 if (tempChannel && !tempChannel.deleted) {
@@ -760,10 +800,10 @@ async function handleCategorySearch(interaction, cartId, category) {
 async function handleCheckout(interaction, cartId) {
     try {
         console.log(`[DEBUG] handleCheckout called with cartId: ${cartId}`);
-        
+
         const cart = await Cart.findById(cartId);
         console.log(`[DEBUG] Cart lookup result:`, cart);
-        
+
         if (!cart) {
             return await interaction.reply({
                 content: '❌ Carrinho não encontrado. Tente abrir um novo carrinho.',
@@ -782,7 +822,7 @@ async function handleCheckout(interaction, cartId) {
 
         const items = await Cart.getItems(cartId);
         console.log(`[DEBUG] Cart items count: ${items.length}`);
-        
+
         if (items.length === 0) {
             return await interaction.reply({
                 content: '❌ Seu carrinho está vazio. Adicione itens antes de fazer checkout.',
@@ -800,7 +840,7 @@ async function handleCheckout(interaction, cartId) {
     } catch (error) {
         console.error('Error handling checkout:', error);
         console.error('Error stack:', error.stack);
-        
+
         if (!interaction.replied && !interaction.deferred) {
             await interaction.reply({
                 content: '❌ Erro ao processar checkout. Tente novamente.',
@@ -977,4 +1017,41 @@ async function handleConfirmCheckout(interaction, cartId) {
             console.error('[ERROR] Error sending error message:', replyError);
         }
     }
+
+    // ⭐ FUNÇÃO SIMPLIFICADA
+    // No final do buttonHandler.js:
+
+    async function handleCloseAccountTicket(interaction) {
+        try {
+            await interaction.deferUpdate();
+
+            const embed = new EmbedBuilder()
+                .setTitle('🔒 Fechando Canal')
+                .setDescription('Este canal será fechado em 5 segundos...')
+                .setColor('#ed4245')
+                .setTimestamp();
+
+            await interaction.editReply({
+                embeds: [embed],
+                components: []
+            });
+
+            // Fechar canal após 5 segundos
+            setTimeout(async () => {
+                try {
+                    await interaction.channel.delete();
+                } catch (error) {
+                    console.error('Error deleting account channel:', error);
+                }
+            }, 5000);
+
+        } catch (error) {
+            console.error('Error closing account ticket:', error);
+            await interaction.followUp({
+                content: '❌ Erro ao fechar canal.',
+                ephemeral: true
+            });
+        }
+    }
+
 }

@@ -5,6 +5,8 @@ const config = require('./config.json');
 const fs = require('fs');
 const path = require('path');
 const { applyDatabaseFixes } = require('./database/schema-fix');
+const revenueCommand = require('./commands/slash/revenue');
+const friendshipLogsCommand = require('./commands/slash/friendship-logs');
 
 // Import auto-updater
 const CatalogAutoUpdater = require('./CatalogAutoUpdater');
@@ -63,7 +65,7 @@ client.once('ready', async () => {
 
     // Initialize database
     try {
-        
+
         await Database.initialize();
         await applyDatabaseFixes();
         await runMigrations();
@@ -89,10 +91,10 @@ client.on('messageCreate', async message => {
 
     if (message.attachments.size > 0) {
         console.log(`[DEBUG] Message with attachment in channel ${message.channel.id}`);
-        
+
         try {
             const order = await OrderLog.findActiveOrderByChannelId(
-                message.channel.id, 
+                message.channel.id,
                 'PENDING_PAYMENT_PROOF'
             );
 
@@ -100,34 +102,34 @@ client.on('messageCreate', async message => {
 
             if (order && order.user_id === message.author.id) {
                 console.log(`[DEBUG] Processing payment proof for order ${order.id}`);
-                
+
                 const attachment = message.attachments.first();
                 if (attachment && attachment.contentType && attachment.contentType.startsWith('image/')) {
                     console.log(`[DEBUG] Valid image attachment received: ${attachment.url}`);
-                    
+
                     // Confirmar recebimento
                     await message.reply('✅ Comprovante de pagamento recebido! Nossa equipe irá analisar em breve.');
-                    
+
                     // ⭐ ATUALIZAR COM FALLBACK DIRETO
                     console.log(`[DEBUG] Updating order ${order.id} with payment proof...`);
-                    
+
                     let updateSuccess = false;
-                    
+
                     try {
                         // Tentar método normal com timeout
                         updateSuccess = await Promise.race([
                             OrderLog.addPaymentProof(order.id, attachment.url),
-                            new Promise((_, reject) => 
+                            new Promise((_, reject) =>
                                 setTimeout(() => reject(new Error('addPaymentProof timeout')), 5000)
                             )
                         ]);
-                        
+
                         console.log(`[DEBUG] OrderLog.addPaymentProof result:`, updateSuccess);
-                        
+
                     } catch (error) {
                         console.error(`[ERROR] OrderLog.addPaymentProof failed:`, error);
                         console.log(`[DEBUG] Trying direct database update...`);
-                        
+
                         // ⭐ FALLBACK: Atualização direta no banco
                         try {
                             const db = require('./database/connection');
@@ -135,44 +137,44 @@ client.on('messageCreate', async message => {
                                 'UPDATE order_logs SET payment_proof_url = ?, status = ? WHERE id = ?',
                                 [attachment.url, 'PENDING_MANUAL_APPROVAL', order.id]
                             );
-                            
+
                             updateSuccess = directResult.changes > 0;
                             console.log(`[DEBUG] Direct database update result:`, updateSuccess);
-                            
+
                         } catch (directError) {
                             console.error(`[ERROR] Direct database update failed:`, directError);
                             await message.followUp('❌ Erro ao processar comprovante. Tente novamente.');
                             return;
                         }
                     }
-                    
+
                     if (!updateSuccess) {
                         console.error(`[ERROR] Failed to update order ${order.id}`);
                         await message.followUp('❌ Erro ao atualizar pedido. Contate o suporte.');
                         return;
                     }
-                    
+
                     // ⭐ ENVIAR PARA ADMIN
                     console.log(`[DEBUG] Sending order ${order.id} to admin approval...`);
-                    
+
                     try {
                         // Verificar se OrderService existe
                         if (!OrderService || typeof OrderService.sendOrderToAdminApproval !== 'function') {
                             console.error(`[ERROR] OrderService not available, using manual notification`);
-                            
+
                             // ⭐ FALLBACK: Notificação manual
                             const adminChannelId = config.adminLogChannelId || config.approvalNeededChannelId || config.orderApprovalChannelId;
                             if (adminChannelId) {
                                 const adminChannel = await message.client.channels.fetch(adminChannelId);
                                 if (adminChannel) {
                                     const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-                                    
+
                                     const quickEmbed = new EmbedBuilder()
                                         .setTitle('🧾 Novo Comprovante')
                                         .setDescription(`**Pedido ID:** ${order.id}\n**Canal:** <#${message.channel.id}>`)
                                         .setImage(attachment.url)
                                         .setColor('#faa61a');
-                                    
+
                                     const quickRow = new ActionRowBuilder()
                                         .addComponents(
                                             new ButtonBuilder()
@@ -184,30 +186,30 @@ client.on('messageCreate', async message => {
                                                 .setLabel('❌ Rejeitar')
                                                 .setStyle(ButtonStyle.Danger)
                                         );
-                                    
+
                                     await adminChannel.send({
                                         content: `🔔 **Comprovante recebido** - Pedido #${order.id}`,
                                         embeds: [quickEmbed],
                                         components: [quickRow]
                                     });
-                                    
+
                                     console.log(`[DEBUG] Manual admin notification sent`);
                                 }
                             }
-                            
+
                         } else {
                             // Usar OrderService normalmente
                             await OrderService.sendOrderToAdminApproval(message.client, order.id);
                             console.log(`[DEBUG] OrderService notification sent`);
                         }
-                        
+
                     } catch (adminError) {
                         console.error(`[ERROR] Admin notification failed:`, adminError);
                         // Não falhar aqui, apenas logar
                     }
-                    
+
                     console.log(`[DEBUG] Payment proof processing completed for order ${order.id}`);
-                    
+
                 } else {
                     console.log(`[DEBUG] Invalid attachment type:`, attachment?.contentType);
                     await message.reply('⚠️ Por favor, envie um comprovante em formato de imagem (PNG, JPG, etc.).');
@@ -226,6 +228,12 @@ client.on('interactionCreate', async (interaction) => {
         if (interaction.isChatInputCommand()) {
             // Handle slash commands
             switch (interaction.commandName) {
+                case 'friendship-logs':
+                    await friendshipLogsCommand.execute(interaction);
+                    break;
+                case 'revenue':
+                    await revenueCommand.execute(interaction);
+                    break;
                 case 'send-panel':
                     await sendPanelCommand.execute(interaction);
                     break;

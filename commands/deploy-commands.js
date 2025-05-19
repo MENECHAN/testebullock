@@ -125,6 +125,68 @@ const commands = [
             subcommand
                 .setName('import-config')
                 .setDescription('Importa configuração de preços')
+        ),
+
+    // ⭐ COMANDO DE LOGS DE AMIZADES
+    new SlashCommandBuilder()
+        .setName('friendship-logs')
+        .setDescription('Mostra logs e estatísticas de amizades')
+        .setDefaultMemberPermissions(0)
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('stats')
+                .setDescription('Estatísticas gerais de amizades')
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('recent')
+                .setDescription('Amizades recentes')
+                .addIntegerOption(option =>
+                    option.setName('limit')
+                        .setDescription('Número de amizades a mostrar (padrão: 10)')
+                        .setRequired(false)
+                )
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('user')
+                .setDescription('Amizades de um usuário específico')
+                .addUserOption(option =>
+                    option.setName('usuario')
+                        .setDescription('Usuário para verificar')
+                        .setRequired(true)
+                )
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('pending')
+                .setDescription('Pedidos de amizade pendentes')
+        ),
+
+    // ⭐ COMANDO DE FATURAMENTO
+    new SlashCommandBuilder()
+        .setName('revenue')
+        .setDescription('Mostra estatísticas de faturamento da loja')
+        .setDefaultMemberPermissions(0)
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('summary')
+                .setDescription('Resumo geral do faturamento')
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('detailed')
+                .setDescription('Faturamento detalhado por período')
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('top-clients')
+                .setDescription('Top clientes por faturamento')
+                .addIntegerOption(option =>
+                    option.setName('limit')
+                        .setDescription('Número de clientes a mostrar (padrão: 10)')
+                        .setRequired(false)
+                )
         )
 ];
 
