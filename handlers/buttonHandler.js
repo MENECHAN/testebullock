@@ -11,6 +11,9 @@ const FriendshipService = require('../services/friendshipService');
 const fs = require('fs');
 const OrderService = require('../services/orderService');
 
+// handlers/buttonHandler.js - Corrigir handlers de aprovação/rejeição
+
+// No início do arquivo, adicione/corregir os handlers para pedidos
 module.exports = {
     async handle(interaction) {
         console.log(`[DEBUG] Button interaction received: ${interaction.customId}`);
@@ -18,15 +21,29 @@ module.exports = {
         const [action, ...params] = interaction.customId.split('_');
         console.log(`[DEBUG] Parsed action: ${action}, params:`, params);
 
+        // ⭐ CORRIGIR HANDLERS DE PEDIDOS
+        if (action === 'approve' && params[0] === 'order') {
+            const orderId = params[1];
+            console.log(`[DEBUG] Approve order button clicked for order ${orderId}`);
+            await OrderService.approveOrder(interaction, orderId);
+            return;
+        }
+
+        if (action === 'reject' && params[0] === 'order') {
+            const orderId = params[1];
+            console.log(`[DEBUG] Reject order button clicked for order ${orderId}`);
+            await OrderService.rejectOrder(interaction, orderId);
+            return;
+        }
+
+        // ⭐ HANDLER PARA SELEÇÃO DE CONTA (approve_order usa isso)
         if (action === 'select' && params[0] === 'account') {
             // customId: select_account_ORDERID_ACCOUNTID
             const orderId = params[1];
             const accountId = params[2];
-
             console.log(`[DEBUG ButtonHandler] Account selection via button: Order ${orderId}, Account ${accountId}`);
 
             try {
-                const OrderService = require('../services/orderService');
                 await OrderService.processAccountSelection(interaction, orderId, accountId);
             } catch (error) {
                 console.error('[ERROR ButtonHandler] Account selection error:', error);
@@ -35,15 +52,6 @@ module.exports = {
                     ephemeral: true
                 });
             }
-            return;
-        }
-
-        if (action === 'approve' && params[0] === 'order') {
-            await OrderService.approveOrder(interaction, params[1]);
-            return;
-        }
-        if (action === 'reject' && params[0] === 'order') {
-            await OrderService.rejectOrder(interaction, params[1]);
             return;
         }
 
@@ -57,7 +65,6 @@ module.exports = {
             return;
         }
 
-        // ADICIONE ESTES HANDLERS AQUI:
         // Handlers para pedidos de amizade
         if (action === 'approve' && params[0] === 'friendship') {
             await FriendshipService.approveFriendship(interaction, params[1]);
@@ -72,16 +79,14 @@ module.exports = {
             return;
         }
 
-        // Handlers para pedidos de compra
-        if (action === 'approve' && params[0] === 'order') {
-            await OrderService.approveOrder(interaction, params[1]);
+        // ⭐ HANDLER PARA CHECKOUT COM CONTA
+        if (action === 'confirm' && params[0] === 'checkout' && params[1] && params[2]) {
+            const cartId = params[1];
+            const accountId = params[2];
+            console.log(`[DEBUG] Confirm checkout with account: Cart ${cartId}, Account ${accountId}`);
+            await handleConfirmCheckoutWithAccount(interaction, cartId, accountId);
             return;
         }
-        if (action === 'reject' && params[0] === 'order') {
-            await OrderService.rejectOrder(interaction, params[1]);
-            return;
-        }
-
 
         // Handlers do carrinho com dropdown
         switch (action) {
@@ -124,7 +129,10 @@ module.exports = {
                     console.log(`[DEBUG] Calling handleConfirmAddItem with cartId: ${params[1]}, itemId: ${params[2]}`);
                     await handleConfirmAddItem(interaction, params[1], params[2]);
                 } else if (params[0] === 'checkout') {
-                    await handleConfirmCheckout(interaction, params[1]);
+                    // Se é só confirm_checkout_CARTID (sem account)
+                    if (params.length === 2) {
+                        await handleConfirmCheckout(interaction, params[1]);
+                    }
                 }
                 break;
 

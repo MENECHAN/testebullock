@@ -496,7 +496,6 @@ class CartService {
                 .slice(0, 25) // Discord limit
                 .map(([category, count]) => ({
                     label: this.getCategoryName(category),
-                    description: `${count} itens disponíveis`,
                     value: category,
                     emoji: this.getCategoryEmojiObject(category)
                 }));
@@ -673,16 +672,6 @@ class CartService {
                 .setTitle(`${this.getCategoryEmoji(category)} ${this.getCategoryName(category)}`)
                 .setColor('#5865f2')
                 .setTimestamp();
-
-            if (needsPagination) {
-                embed.setDescription(`**${uniqueItems.length} itens encontrados**\n` +
-                    `Página ${page}/${totalPages}\n\n` +
-                    'Selecione um item:');
-            } else {
-                embed.setDescription(`**${uniqueItems.length} itens encontrados**\n\n` +
-                    'Selecione um item:');
-            }
-
             const components = [];
 
             // Create item select menu (limited to 25 items by Discord)

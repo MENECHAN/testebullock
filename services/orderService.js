@@ -127,18 +127,20 @@ class OrderService {
                 console.log(`[DEBUG OrderService] Payment proof attached: ${order.payment_proof_url}`);
             }
 
-            // ⭐ CRIAR BOTÕES
+            // ⭐ CRIAR BOTÕES COM IDs CORRETOS
             const row = new ActionRowBuilder()
                 .addComponents(
                     new ButtonBuilder()
-                        .setCustomId(`approve_order_${order.id}`)
+                        .setCustomId(`approve_order_${order.id}`) // ⭐ FORMATO CORRETO
                         .setLabel('✅ Aprovar Pagamento')
                         .setStyle(ButtonStyle.Success),
                     new ButtonBuilder()
-                        .setCustomId(`reject_order_${order.id}`)
+                        .setCustomId(`reject_order_${order.id}`) // ⭐ FORMATO CORRETO
                         .setLabel('❌ Rejeitar Pagamento')
                         .setStyle(ButtonStyle.Danger)
                 );
+
+            console.log(`[DEBUG OrderService] Button IDs created: approve_order_${order.id}, reject_order_${order.id}`);
 
             // Enviar para canal de admin
             const adminChannelId = config.adminLogChannelId || config.approvalNeededChannelId || config.orderApprovalChannelId;
@@ -207,7 +209,7 @@ class OrderService {
 
             console.log(`[DEBUG OrderService.approveOrder] Temporary response sent`);
 
-            // ⭐ BUSCAR USUÁRIO PELO DISCORD ID (não pela tabela users)
+            // ⭐ BUSCAR USUÁRIO PELO DISCORD ID
             const User = require('../models/User');
             const user = await User.findByDiscordId(order.user_id);
 
@@ -225,7 +227,7 @@ class OrderService {
                 });
             }
 
-            // ⭐ BUSCAR AMIZADES/CONTAS DO CLIENTE (não contas admin)
+            // ⭐ BUSCAR AMIZADES/CONTAS DO CLIENTE
             const Friendship = require('../models/Friendship');
             const clientFriendships = await Friendship.findByUserId(user.id);
 
@@ -330,100 +332,144 @@ class OrderService {
             await OrderLog.updateStatus(orderId, 'AWAITING_ACCOUNT_SELECTION');
             console.log(`[DEBUG] Order status updated to AWAITING_ACCOUNT_SELECTION`);
 
-            // ⭐ CRIAR BOTÕES PARA AS CONTAS ELEGÍVEIS
-            try {
-                const buttons = eligibleAccounts.slice(0, 5).map((account, index) =>
-                    new ButtonBuilder()
-                        .setCustomId(`select_account_${orderId}_${account.id}`)
-                        .setLabel(`${account.nickname} (${account.rp_amount.toLocaleString()} RP)`)
-                        .setStyle(ButtonStyle.Success)
-                        .setEmoji('✅')
-                );
+            // ⭐ CRIAR INTERFACE DE SELEÇÃO
+            console.log(`[DEBUG] Creating selection interface for ${eligibleAccounts.length} accounts`);
 
-                const rows = [];
-                for (let i = 0; i < buttons.length; i += 5) {
-                    const row = new ActionRowBuilder().addComponents(buttons.slice(i, i + 5));
-                    rows.push(row);
-                }
+            // Se há apenas 1 conta elegível, processar diretamente
+            if (eligibleAccounts.length === 1) {
+                console.log(`[DEBUG] Only 1 eligible account, processing directly...`);
+                const account = eligibleAccounts[0];
 
-                // ⭐ EMBED COM INFORMAÇÕES DO CLIENTE
-                const selectionEmbed = new EmbedBuilder()
-                    .setTitle(`✅ Pagamento Aprovado - Selecionar Conta do Cliente`)
+                const confirmEmbed = new EmbedBuilder()
+                    .setTitle(`✅ Única Conta Elegível Encontrada`)
                     .setDescription(
-                        `**Pedido #${orderId} aprovado!**\n\n` +
+                        `**Pedido #${orderId}** - Processamento automático\n\n` +
                         `**Cliente:** <@${order.user_id}>\n` +
-                        `**Total a debitar:** ${order.total_rp.toLocaleString()} RP\n` +
-                        `**Contas elegíveis do cliente:** ${eligibleAccounts.length}\n\n` +
-                        `🎮 **Selecione qual conta do CLIENTE deve ter o RP debitado:**`
+                        `**Conta elegível:** ${account.nickname}\n` +
+                        `**RP a debitar:** ${order.total_rp.toLocaleString()}`
                     )
                     .addFields([
                         {
-                            name: '✅ Contas Elegíveis',
-                            value: eligibleAccounts.map(acc =>
-                                `**${acc.nickname}** (${acc.lol_nickname}#${acc.lol_tag})\n` +
-                                `💎 ${acc.rp_amount.toLocaleString()} RP | ⏰ ${acc.days_since_added} dias de amizade`
-                            ).join('\n\n'),
+                            name: '✅ Conta Selecionada Automaticamente',
+                            value:
+                                `**${account.nickname}** (${account.lol_nickname}#${account.lol_tag})\n` +
+                                `💎 ${account.rp_amount.toLocaleString()} RP disponível\n` +
+                                `⏰ ${account.days_since_added} dias de amizade`,
                             inline: false
                         }
                     ])
                     .setColor('#57f287')
-                    .setFooter({ text: `Admin: ${interaction.user.tag} | Pedido ID: ${orderId}` })
+                    .setFooter({ text: `Admin: ${interaction.user.tag} | Processamento automático` })
                     .setTimestamp();
 
-                // ⭐ MOSTRAR CONTAS INELEGÍVEIS SE HOUVER
-                if (ineligibleAccounts.length > 0) {
-                    let ineligibleText = ineligibleAccounts.map(acc => {
-                        const timeIssue = acc.days_since_added < minDays;
-                        const rpIssue = acc.rp_amount < order.total_rp;
+                const autoRow = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId(`select_account_${orderId}_${account.id}`)
+                            .setLabel(`✅ Confirmar e Processar`)
+                            .setStyle(ButtonStyle.Success),
+                        new ButtonBuilder()
+                            .setCustomId(`cancel_processing_${orderId}`)
+                            .setLabel(`❌ Cancelar`)
+                            .setStyle(ButtonStyle.Danger)
+                    );
 
-                        let status = '';
-                        if (timeIssue) status += `⏳ ${acc.days_remaining} dias restantes `;
-                        if (rpIssue) status += `💎 Faltam ${order.total_rp - acc.rp_amount} RP`;
+                await interaction.editReply({
+                    embeds: [confirmEmbed],
+                    components: [autoRow]
+                });
+                return;
+            }
 
-                        return `**${acc.nickname}** - ${status}`;
-                    }).join('\n');
+            // ⭐ SE HÁ MÚLTIPLAS CONTAS, CRIAR BOTÕES
+            console.log(`[DEBUG] Multiple eligible accounts (${eligibleAccounts.length}), creating selection interface...`);
 
-                    selectionEmbed.addFields([
-                        {
-                            name: '❌ Contas Não Elegíveis',
-                            value: ineligibleText.substring(0, 1024),
-                            inline: false
-                        }
-                    ]);
+            // Criar botões para as contas elegíveis (máximo 5 por linha)
+            const rows = [];
+            let currentRow = new ActionRowBuilder();
+            let buttonCount = 0;
+
+            eligibleAccounts.forEach((account, index) => {
+                const button = new ButtonBuilder()
+                    .setCustomId(`select_account_${orderId}_${account.id}`)
+                    .setLabel(`${account.nickname} (${account.rp_amount.toLocaleString()} RP)`)
+                    .setStyle(ButtonStyle.Success)
+                    .setEmoji('✅');
+
+                currentRow.addComponents(button);
+                buttonCount++;
+
+                // Se chegou a 5 botões ou é o último, adiciona a linha
+                if (buttonCount === 5 || index === eligibleAccounts.length - 1) {
+                    rows.push(currentRow);
+                    currentRow = new ActionRowBuilder();
+                    buttonCount = 0;
+                }
+            });
+
+            // Limitar a 5 linhas (máximo do Discord)
+            if (rows.length > 5) {
+                rows.splice(5);
+            }
+
+            // ⭐ EMBED COM INFORMAÇÕES DAS CONTAS
+            const selectionEmbed = new EmbedBuilder()
+                .setTitle(`✅ Pagamento Aprovado - Selecionar Conta`)
+                .setDescription(
+                    `**Pedido #${orderId} aprovado!**\n\n` +
+                    `**Cliente:** <@${order.user_id}>\n` +
+                    `**Total a debitar:** ${order.total_rp.toLocaleString()} RP\n` +
+                    `**Contas elegíveis:** ${eligibleAccounts.length}\n\n` +
+                    `🎮 **Selecione qual conta do CLIENTE deve ter o RP debitado:**`
+                )
+                .addFields([
+                    {
+                        name: '✅ Contas Elegíveis',
+                        value: eligibleAccounts.map(acc =>
+                            `**${acc.nickname}** (${acc.lol_nickname}#${acc.lol_tag})\n` +
+                            `💎 ${acc.rp_amount.toLocaleString()} RP | ⏰ ${acc.days_since_added} dias`
+                        ).join('\n\n'),
+                        inline: false
+                    }
+                ])
+                .setColor('#57f287')
+                .setFooter({ text: `Admin: ${interaction.user.tag} | Pedido ID: ${orderId}` })
+                .setTimestamp();
+
+            // Mostrar contas inelegíveis se houver
+            if (ineligibleAccounts.length > 0) {
+                let ineligibleText = ineligibleAccounts.map(acc => {
+                    const timeIssue = acc.days_since_added < minDays;
+                    const rpIssue = acc.rp_amount < order.total_rp;
+
+                    let status = '';
+                    if (timeIssue) status += `⏳ ${acc.days_remaining}d `;
+                    if (rpIssue) status += `💎 -${order.total_rp - acc.rp_amount}RP`;
+
+                    return `**${acc.nickname}** - ${status}`;
+                }).join('\n');
+
+                // Truncar se muito longo
+                if (ineligibleText.length > 1024) {
+                    ineligibleText = ineligibleText.substring(0, 1021) + '...';
                 }
 
-                await interaction.editReply({
-                    content: null,
-                    embeds: [selectionEmbed],
-                    components: rows
-                });
-
-                console.log(`[DEBUG] Account selection sent successfully with ${eligibleAccounts.length} eligible accounts!`);
-
-            } catch (buttonError) {
-                console.error('[ERROR] Button creation failed:', buttonError);
-
-                // ⭐ FALLBACK - LISTA MANUAL
-                const fallbackEmbed = new EmbedBuilder()
-                    .setTitle('⚠️ Seleção Manual Necessária')
-                    .setDescription(
-                        `**Contas elegíveis do cliente:**\n\n` +
-                        eligibleAccounts.map((acc, index) =>
-                            `**${index + 1}.** ${acc.nickname}\n` +
-                            `   🏷️ Nick: ${acc.lol_nickname}#${acc.lol_tag}\n` +
-                            `   💎 RP: ${acc.rp_amount.toLocaleString()}\n` +
-                            `   ⏰ Amizade: ${acc.days_since_added} dias\n` +
-                            `   🆔 Account ID: \`${acc.id}\`\n`
-                        ).join('\n')
-                    )
-                    .setColor('#faa61a')
-                    .setTimestamp();
-
-                await interaction.editReply({
-                    embeds: [fallbackEmbed],
-                    components: []
-                });
+                selectionEmbed.addFields([
+                    {
+                        name: '❌ Contas Não Elegíveis',
+                        value: ineligibleText,
+                        inline: false
+                    }
+                ]);
             }
+
+            await interaction.editReply({
+                content: null,
+                embeds: [selectionEmbed],
+                components: rows
+            });
+
+            console.log(`[DEBUG] Account selection interface sent successfully with ${rows.length} button rows!`);
 
         } catch (error) {
             console.error('[ERROR OrderService.approveOrder] Main error:', error);
@@ -660,8 +706,8 @@ class OrderService {
                             inline: true
                         },
                         {
-                            name: '🎮 Conta de Entrega',
-                            value: `${account.nickname}\n(${account.lol_nickname}#${account.lol_tag})`,
+                            name: '🎮 Destino',
+                            value: `(${friendship.lol_nickname}#${friendship.lol_tag})`,
                             inline: true
                         },
                         {

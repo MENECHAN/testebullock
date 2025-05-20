@@ -3,6 +3,7 @@
 const { EmbedBuilder, StringSelectMenuBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const CartService = require('../services/cartService');
 const Cart = require('../models/Cart');
+const config = require('../config.json'); 
 
 module.exports = {
     async handle(interaction) {

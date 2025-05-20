@@ -274,24 +274,31 @@ class OrderLog {
     static async updateStatus(orderId, status, orderChannelId = null) {
         let query = 'UPDATE order_logs SET status = ?, updated_at = CURRENT_TIMESTAMP';
         const params = [status];
-        if (orderChannelId !== null && orderChannelId !== undefined) { // Verifica se orderChannelId foi passado
+
+        // Verifica se orderChannelId foi passado e não é null ou undefined
+        if (orderChannelId !== null && orderChannelId !== undefined) {
             query += ', order_channel_id = ?';
             params.push(orderChannelId);
         }
         query += ' WHERE id = ?';
         params.push(orderId);
 
+        console.log(`[DB OrderLog] Attempting to update status for order ${orderId} to ${status}${orderChannelId ? ` and channel ${orderChannelId}` : ''}. Query: ${query} Params: ${params}`);
         try {
-            const result = await new Promise((resolve, reject) => {
-                db.run(query, params, function (err) {
-                    if (err) reject(err);
-                    else resolve({ affectedRows: this.changes });
-                });
-            });
-            return result.affectedRows > 0;
+            // db aqui é a instância da sua classe Database exportada de ../database/connection.js
+            // e o método .run já retorna uma Promise que resolve com { lastID, changes }
+            const result = await db.run(query, params);
+
+            if (result.changes > 0) {
+                console.log(`[DB OrderLog] Status updated successfully for order ${orderId}. Rows affected: ${result.changes}`);
+                return true;
+            } else {
+                console.warn(`[DB OrderLog] Update status for order ${orderId} did not affect any rows. Order might not exist or status/channel was already set.`);
+                return false;
+            }
         } catch (error) {
-            console.error('Erro ao atualizar status do pedido:', error);
-            throw error;
+            console.error(`[DB OrderLog] Error updating status for order ${orderId} to ${status}:`, error);
+            throw error; // Relança o erro para ser tratado pelo OrderService
         }
     }
 
